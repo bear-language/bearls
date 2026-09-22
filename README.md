@@ -139,9 +139,11 @@ cwd = ../../..
 args = main.br -I tests/projects/04 -I tests/lib --warn-cyclic-import
 ```
 
-- `args` (required) is the bearc command line. `args=...` works too, and so does spelling out the
+- `args` (optional) is the bearc command line. `args=...` works too, and so does spelling out the
   whole command (`args = bearc main.br ...`). bearc's arg parser skips `argv[0]`, so bearls always
-  puts `bearc` there itself. Args are split on whitespace, and quoting isn't supported yet.
+  puts `bearc` there itself. Args are split on whitespace, and quoting isn't supported yet. Without
+  `args`, there's no project database: every file under the `.bearls` gets its own, and the
+  `.bearls` only sets `cwd` and `import-paths` for them.
 - `cwd` (optional) is the directory bearc runs from. A relative `cwd` is relative to the `.bearls`
   file's directory, and it has to exist. Without `cwd`, bearc runs from the innermost workspace
   folder containing the `.bearls` (with Neovim's `root_markers = { '.git' }`, the repository root),
@@ -151,8 +153,14 @@ args = main.br -I tests/projects/04 -I tests/lib --warn-cyclic-import
   bear-lang, and `cwd` makes it work no matter which folder the editor treats as the workspace.
 - As with the CLI, bearc looks up the input file in its working directory and then on its `-I`
   paths. It resolves imports against the `-I` paths only, not against the importing file.
+- `import-paths` (optional) is a whitespace-separated list of directories. They're added to
+  `importPaths` from `initializationOptions` for the files under the `.bearls` that get a
+  per-document database: the files outside the project, or every file if there's no `args`.
+  Relative ones are relative to the same directory as `args`. A `.bearls` with only
+  `import-paths = lib` works like a per-directory `importPaths`.
 - `importPaths` and `extraArgs` from `initializationOptions` don't apply to the project's
-  database, only to the per-document databases of files outside it.
+  database, only to the per-document databases of files outside it. The same goes for
+  `import-paths`.
 - An invalid `.bearls` (unknown key, bad args, a `cwd` that doesn't exist) is reported through
   `window/showMessage`, and its files fall back to one database each. Changes to `.bearls` are
   picked up on the next save, or on the next edit to a file in the project. A `.bearls` that is
@@ -169,7 +177,7 @@ Without a `.bearls`, every open document gets its own database, as described abo
 | `debounceMs` | `30` | quiet period after an edit before re-analyzing |
 
 The import path for a document's analysis is: the document's own directory, then `importPaths`, then
-the workspace folders. bearc resolves `import "x.br"` against its import paths, not against the
+its `.bearls` file's `import-paths`, then the workspace folders. bearc resolves `import "x.br"` against its import paths, not against the
 importing file. The document's own directory comes first to mirror the usual `bearc main.br -I <dir>`
 invocation.
 

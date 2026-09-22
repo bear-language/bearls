@@ -456,7 +456,11 @@ void Server::attach_project(Document& doc) {
     doc.project_file = file.value_or("");
     if (file && !projects.contains(*file)) {
         projects.emplace(*file,
-                         Project{.file = *file, .stale = true, .analysis = nullptr, .error = {}});
+                         Project{.file = *file,
+                                 .stale = true,
+                                 .analysis = nullptr,
+                                 .import_paths = {},
+                                 .error = {}});
     }
 }
 
@@ -551,6 +555,7 @@ void Server::analyze(Document& doc, std::span<const hir::SourceOverlay> current_
 void Server::analyze(Project& project, std::span<const hir::SourceOverlay> current_overlays) {
     project.stale = false;
     project.analysis.reset();
+    project.import_paths.clear();
     std::expected<ProjectConfig, std::string> config = read_project_file(project.file);
     if (!config) {
         // its documents fall back to analyses of their own
@@ -563,6 +568,15 @@ void Server::analyze(Project& project, std::span<const hir::SourceOverlay> curre
     }
     const std::string working_dir
         = project_working_directory(project.file, *config, workspace_folders);
+    for (const std::string& path : config->import_paths) {
+        // operator/ keeps an absolute path as is
+        project.import_paths.push_back(
+            canonical_path((std::filesystem::path{working_dir} / path).string()));
+    }
+    if (config->args.empty()) {
+        project.error.clear();
+        return; // its documents get analyses of their own, with the project's import paths
+    }
     std::expected<ScopedWorkingDirectory, std::string> in_working_dir
         = ScopedWorkingDirectory::enter(working_dir);
     if (!in_working_dir) {
@@ -598,10 +612,17 @@ AnalysisOptions Server::analysis_options_for(const Document& doc) const {
     AnalysisOptions options;
     // bearc searches import paths rather than the importing file's directory, so mirror the
     // usual `bearc main.br -I <its dir>` invocation by searching the root's own directory first
-    options.import_paths.reserve(1 + settings.import_paths.size() + workspace_folders.size());
+    const auto project = projects.find(doc.project_file);
+    const std::span<const std::string> project_import_paths
+        = project == projects.end() ? std::span<const std::string>{}
+                                    : project->second.import_paths;
+    options.import_paths.reserve(1 + settings.import_paths.size() + project_import_paths.size()
+                                 + workspace_folders.size());
     options.import_paths.push_back(parent_directory(doc.path));
     options.import_paths.insert(options.import_paths.end(), settings.import_paths.begin(),
                                 settings.import_paths.end());
+    options.import_paths.insert(options.import_paths.end(), project_import_paths.begin(),
+                                project_import_paths.end());
     options.import_paths.insert(options.import_paths.end(), workspace_folders.begin(),
                                 workspace_folders.end());
     options.extra_args = settings.extra_args;
