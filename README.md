@@ -177,26 +177,14 @@ invocation.
 
 - Go to definition doesn't resolve member accesses (`p.x`, `self.bar_`). That needs the
   receiver's type, which `ContextDatabase` doesn't expose. These resolve to nothing rather than to
-  something wrong.
+  something wrong
 - A document that has never been saved (so doesn't exist on disk) isn't analyzed, since bearc
-  resolves its root file on disk. Once it's saved, its unsaved edits are used as usual.
-- bearls runs bearc in-process, so a bearc crash or hang on some input takes the server with it.
-  In Neovim, `:lsp restart bearls` brings it back. Half-typed code currently triggers some of
-  these: see below.
+  resolves its root file on disk. Once it's saved, its unsaved edits are used as usual
 
 ## Fuzzing with half-typed input
-
-An editor hands the compiler partial code on every keystroke, which a batch compiler rarely sees.
-`tests/prefix_fuzz.py` feeds every n-th prefix of every `.br` file through the server. When the
-server dies or stops answering, the script re-runs the same input through the `bearc` CLI (with
-and without `--parse-only`) to separate compiler bugs from server bugs, and writes a repro file for
-each failure:
 
 ```bash
 python3 tests/prefix_fuzz.py ../bear-lang/tests --step 5 --out fuzz-failures
 # hang  .../tests/hir/63.br @ 110 chars: bearc also hangs in the parser (repro: fuzz-failures/hir_63_prefix110.br)
 bearc fuzz-failures/hir_63_prefix110.br -I ../bear-lang/tests/hir    # reproduce directly
 ```
-
-In the first run, every failure also reproduced with the plain `bearc` CLI. Most are infinite loops
-in the parser at an unexpected end of file, and a few are segfaults in the parser and in sema.
