@@ -48,8 +48,11 @@ struct Project {
     std::string file;
     /// something the analysis read (or the .bearls file itself) may have changed
     bool stale = true;
-    /// null while the .bearls file is invalid
+    /// null while the .bearls file is invalid or has no args
     std::unique_ptr<Analysis> analysis;
+    /// the .bearls file's import-paths (canonical), added to Settings::import_paths for its
+    /// documents that aren't covered by the analysis, empty while the file is invalid
+    std::vector<std::string> import_paths;
     /// the last problem reported with the .bearls file, so each one is only shown once
     std::string error;
 };

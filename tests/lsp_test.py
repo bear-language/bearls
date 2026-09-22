@@ -476,6 +476,23 @@ def project_cwd_overrides_the_workspace_folder(server):
 
 
 @test
+def project_import_paths_apply_to_own_analyses(server):
+    # no args, so no project analysis: main.br stands alone, finding lib/util.br through the
+    # .bearls's import-paths (relative to the workspace folder, like args)
+    repo, project = make_repo("import-paths = lib\n")
+    main = project / "main.br"
+    c = Client(server, ["utf-8"], root=repo)
+    uri = open_doc(c, main)
+    assert c.diagnostics_for(uri) == []
+    assert "analyzed project" not in c.log(), c.log()
+    assert own_analyses(c, main) == 1, c.log()
+    line, col = position_of(main.read_text(), "square(3)")
+    loc = single_location(c.definition(uri, line, col + 1))
+    assert loc["uri"] == (repo / "lib" / "util.br").as_uri(), loc
+    assert c.shutdown() == 0
+
+
+@test
 def missing_project_cwd_is_reported(server):
     repo, project = make_repo("args = main.br -I tests/projects/04 -I lib\ncwd = nowhere\n")
     c = Client(server, ["utf-8"], root=repo)

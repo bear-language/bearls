@@ -26,8 +26,12 @@ inline constexpr std::string_view PROJECT_FILE_NAME = ".bearls";
 
 /// what a project file says
 struct ProjectConfig {
-    /// argv for ContextDatabase, so it always starts with "bearc"
+    /// argv for ContextDatabase, so it always starts with "bearc", empty if the file doesn't say
+    /// (then the project has no analysis of its own)
     std::vector<std::string> args;
+    /// extra -I paths for the per-document analyses of the project's files, as written (relative
+    /// ones are relative to the project's working directory)
+    std::vector<std::string> import_paths;
     /// absolute directory to run bearc from, nullopt if the file doesn't say
     std::optional<std::string> cwd;
 };
@@ -36,13 +40,16 @@ struct ProjectConfig {
 ///
 ///     args = main.br -I lib --warn-cyclic-import
 ///     cwd = ../..
+///     import-paths = lib ../shared
 ///
 /// - blank lines and lines starting with '#' are ignored
-/// - args (required) is split on whitespace and kept exactly as written, relative paths in it are
+/// - args (optional) is split on whitespace and kept exactly as written, relative paths in it are
 /// relative to the project's working directory, like bearc's are relative to its cwd (a leading
 /// "bearc" is accepted and not doubled)
 /// - cwd (optional) is the working directory, relative to the project file's directory, and has to
 /// exist
+/// - import-paths (optional) is split on whitespace, and adds to initializationOptions.importPaths
+/// for documents that get an analysis of their own
 /// - errors are human-readable, e.g. for window/showMessage
 [[nodiscard]] std::expected<ProjectConfig, std::string>
 read_project_file(std::string_view project_file);

@@ -73,6 +73,24 @@ std::optional<std::string> invalid_args_reason(const std::vector<std::string>& a
     return std::nullopt;
 }
 
+/// fills args from an `args` value, nullopt on success
+std::optional<std::string> read_args(std::string_view project_file, std::string_view value,
+                                     std::vector<std::string>& args) {
+    std::vector<std::string> file_args = split_whitespace(value);
+    args.reserve(1 + file_args.size());
+    args.emplace_back("bearc"); // argv[0], skipped by bearc's arg parser
+    for (size_t i = 0; i < file_args.size(); ++i) {
+        if (i == 0 && std::filesystem::path{file_args[i]}.filename() == "bearc") {
+            continue; // the file spelled out the whole command line
+        }
+        args.push_back(std::move(file_args[i]));
+    }
+    if (const std::optional<std::string> reason = invalid_args_reason(args)) {
+        return std::format("{}: invalid args ({})", project_file, *reason);
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 std::optional<std::string> find_project_file(std::string_view dir) {
@@ -100,6 +118,7 @@ std::expected<ProjectConfig, std::string> read_project_file(std::string_view pro
 
     std::optional<std::string_view> args_value;
     std::optional<std::string_view> cwd_value;
+    std::optional<std::string_view> import_paths_value;
     const std::string text = contents.str();
     std::string_view rest = text;
     for (size_t line_num = 1; !rest.empty(); ++line_num) {
@@ -111,12 +130,15 @@ std::expected<ProjectConfig, std::string> read_project_file(std::string_view pro
         }
         const size_t eq = line.find('=');
         const std::string_view key = eq == std::string_view::npos ? line : trim(line.substr(0, eq));
-        std::optional<std::string_view>* value = key == "args"  ? &args_value
-                                                 : key == "cwd" ? &cwd_value
-                                                                : nullptr;
+        std::optional<std::string_view>* value = key == "args"           ? &args_value
+                                                 : key == "cwd"          ? &cwd_value
+                                                 : key == "import-paths" ? &import_paths_value
+                                                                         : nullptr;
         if (eq == std::string_view::npos || !value) {
-            return std::unexpected{std::format(
-                "{}:{}: expected `args = <bearc args>` or `cwd = <dir>`", project_file, line_num)};
+            return std::unexpected{
+                std::format("{}:{}: expected `args = <bearc args>`, `cwd = <dir>`, or "
+                            "`import-paths = <dirs>`",
+                            project_file, line_num)};
         }
         if (*value) {
             return std::unexpected{
@@ -124,22 +146,15 @@ std::expected<ProjectConfig, std::string> read_project_file(std::string_view pro
         }
         *value = trim(line.substr(eq + 1));
     }
-    if (!args_value) {
-        return std::unexpected{std::format("{}: missing `args = <bearc args>`", project_file)};
-    }
 
     ProjectConfig config;
-    std::vector<std::string> file_args = split_whitespace(*args_value);
-    config.args.reserve(1 + file_args.size());
-    config.args.emplace_back("bearc"); // argv[0], skipped by bearc's arg parser
-    for (size_t i = 0; i < file_args.size(); ++i) {
-        if (i == 0 && std::filesystem::path{file_args[i]}.filename() == "bearc") {
-            continue; // the file spelled out the whole command line
-        }
-        config.args.push_back(std::move(file_args[i]));
+    if (import_paths_value) {
+        config.import_paths = split_whitespace(*import_paths_value);
     }
-    if (const std::optional<std::string> reason = invalid_args_reason(config.args)) {
-        return std::unexpected{std::format("{}: invalid args ({})", project_file, *reason)};
+    if (args_value) {
+        if (std::optional<std::string> error = read_args(project_file, *args_value, config.args)) {
+            return std::unexpected{std::move(*error)};
+        }
     }
 
     if (cwd_value) {
