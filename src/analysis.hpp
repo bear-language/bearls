@@ -11,6 +11,7 @@
 #include "compiler/hir/context_database.hpp"
 #include "protocol.hpp"
 #include "text.hpp"
+#include <compiler/hir/indexing.hpp>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -83,6 +84,12 @@ class Analysis {
 
     /// lazily built line index over a file's source in db
     [[nodiscard]] const LineIndex& line_index(hir::FileId fid);
+
+    [[nodiscard]] Diagnostic diagnostic_for_parser_error(hir::FileId fid, PositionEncoding enc,
+                                                         const compiler_error_t& err);
+
+    [[nodiscard]] std::optional<Diagnostic>
+    maybe_diagnostic_for_hir_error(hir::FileId fid, PositionEncoding enc, hir::DiagnosticId did);
 
     /// bearc_args keeps pointers into these, so they must be initialized before (and outlive) db
     std::vector<std::string> arg_storage;

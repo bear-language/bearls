@@ -182,29 +182,15 @@ std::vector<Diagnostic> Analysis::diagnostics(std::string_view path, PositionEnc
         return out;
     }
     const hir::FileId fid = maybe_fid.as_id();
-    const std::string_view src = db.file_source(fid);
-    const LineIndex& lines = line_index(fid);
 
     // parser diagnostics live on the file's ast, independent of the hir::Context
     const compiler_error_list_t& parser_errors = db.parser_diagnostics_for_file(fid);
     const size_t parser_error_count = vector_size(&parser_errors.list_vec);
     out.reserve(parser_error_count);
     for (size_t i = 0; i < parser_error_count; ++i) {
-        const auto* err
-            = static_cast<const compiler_error_t*>(vector_at(&parser_errors.list_vec, i));
-        size_t start = 0;
-        size_t end = 0;
-        if (err->start_tkn) {
-            const token_t* last = err->end_tkn ? err->end_tkn : err->start_tkn;
-            start = offset_in(src, err->start_tkn->start);
-            end = std::max(start, offset_in(src, last->start + last->len));
-        }
-        out.push_back(Diagnostic{
-            .range = lines.range_of(start, end - start, enc),
-            .severity = severity_of(error_diagnostic_type(err->error_code)),
-            .message = ContextDatabase::message_for_parser_diagnostic(*err),
-            .related_information = {},
-        });
+        out.push_back(diagnostic_for_parser_error(
+            fid, enc,
+            *static_cast<const compiler_error_t*>(vector_at(&parser_errors.list_vec, i))));
     }
 
     // hir (semantic) diagnostics
@@ -213,23 +199,54 @@ std::vector<Diagnostic> Analysis::diagnostics(std::string_view path, PositionEnc
     const std::vector<hir::DiagnosticId> hir_diagnostic_ids(hir_ids.begin(), hir_ids.end());
     out.reserve(out.size() + hir_diagnostic_ids.size());
     for (const hir::DiagnosticId did : hir_diagnostic_ids) {
-        const hir::Span span = db.diagnostic(did).span;
-        const hir::diag_type type = db.diagnostic(did).type;
-        // a note/help that follows another diagnostic in its chain (e.g. "previous definition
-        // here") is only reported as relatedInformation on the chain's other members
-        const bool is_secondary = db.diagnostic(did).prev.has_value()
-                                  && (type == hir::diag_type::note || type == hir::diag_type::help);
-        if (is_secondary) {
+        const std::optional<Diagnostic> maybe_diag = maybe_diagnostic_for_hir_error(fid, enc, did);
+        if (!maybe_diag) {
             continue;
         }
-        out.push_back(Diagnostic{
-            .range = lines.range_of(span.start, span.len, enc),
-            .severity = severity_of(type),
-            .message = db.message_for_diagnostic(did),
-            .related_information = related_information(did, enc),
-        });
+        out.push_back(maybe_diag.value());
     }
     return out;
+}
+
+[[nodiscard]] Diagnostic Analysis::diagnostic_for_parser_error(hir::FileId fid,
+                                                               PositionEncoding enc,
+                                                               const compiler_error_t& err) {
+    const std::string_view src = db.file_source(fid);
+    const LineIndex& lines = line_index(fid);
+    size_t start = 0;
+    size_t end = 0;
+    if (err.start_tkn) {
+        const token_t* last = err.end_tkn ? err.end_tkn : err.start_tkn;
+        start = offset_in(src, err.start_tkn->start);
+        end = std::max(start, offset_in(src, last->start + last->len));
+    }
+    return Diagnostic{
+        .range = lines.range_of(start, end - start, enc),
+        .severity = severity_of(error_diagnostic_type(err.error_code)),
+        .message = ContextDatabase::message_for_parser_diagnostic(err),
+        .related_information = {},
+    };
+}
+
+[[nodiscard]] std::optional<Diagnostic>
+Analysis::maybe_diagnostic_for_hir_error(hir::FileId fid, PositionEncoding enc,
+                                         hir::DiagnosticId did) {
+    const hir::Span span = db.diagnostic(did).span;
+    const hir::diag_type type = db.diagnostic(did).type;
+    const LineIndex& lines = line_index(fid);
+    // a note/help that follows another diagnostic in its chain (e.g. "previous definition
+    // here") is only reported as relatedInformation on the chain's other members
+    const bool is_secondary = db.diagnostic(did).prev.has_value()
+                              && (type == hir::diag_type::note || type == hir::diag_type::help);
+    if (is_secondary) {
+        return {};
+    }
+    return Diagnostic{
+        .range = lines.range_of(span.start, span.len, enc),
+        .severity = severity_of(type),
+        .message = db.message_for_diagnostic(did),
+        .related_information = related_information(did, enc),
+    };
 }
 
 std::vector<DiagnosticRelatedInformation> Analysis::related_information(hir::DiagnosticId did,
