@@ -1,0 +1,12 @@
+// tests/fixtures/util.br
+
+mod math {
+    fn square(i32 v) -> i32 {
+        return v * v;
+    }
+}
+
+struct Point {
+    i32 x;
+    i32 y;
+}
