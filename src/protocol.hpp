@@ -60,11 +60,23 @@ struct DiagnosticRelatedInformation {
     std::string message;
 };
 
+/// an edit suggested by a diagnostic's chain (bearc's "remove ..." / "replace with ..." help)
+struct DiagnosticFix {
+    std::string title;
+    /// the text to replace, an empty new_text deletes it
+    Location location;
+    std::string new_text;
+
+    friend bool operator==(const DiagnosticFix&, const DiagnosticFix&) = default;
+};
+
 struct Diagnostic {
     Range range;
     DiagnosticSeverity severity;
     std::string message;
     std::vector<DiagnosticRelatedInformation> related_information;
+    /// not serialized, offered as quickfix code actions instead
+    std::vector<DiagnosticFix> fixes;
 };
 
 /// JSON-RPC and LSP error codes

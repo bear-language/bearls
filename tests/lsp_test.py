@@ -378,6 +378,74 @@ def no_code_actions_without_show_document(server):
     assert c.shutdown() == 0
 
 
+def apply_edit(text: str, uri: str, edit: dict) -> str:
+    """text with a WorkspaceEdit's (utf-8 positioned) changes to uri applied"""
+    lines = text.encode().split(b"\n")
+
+    def offset(pos: dict) -> int:
+        return sum(len(line) + 1 for line in lines[: pos["line"]]) + pos["character"]
+
+    data = text.encode()
+    changes = sorted(edit["changes"][uri], key=lambda e: offset(e["range"]["start"]), reverse=True)
+    for change in changes:
+        start, end = offset(change["range"]["start"]), offset(change["range"]["end"])
+        data = data[:start] + change["newText"].encode() + data[end:]
+    return data.decode()
+
+
+BAD_EXTERN = "\nextern oopsie {\n}\n"
+
+
+@test
+def code_action_fixes_from_chained_diagnostics(server):
+    # edits don't need window/showDocument
+    c = Client(server, ["utf-8"])
+    text = MAIN.read_text() + BAD_EXTERN
+    uri = open_doc(c, MAIN, text)
+    [diag] = c.diagnostics_for(uri)
+    start = diag["range"]["start"]
+    actions = c.code_actions(uri, start["line"], start["character"])
+    assert [a["title"] for a in actions] == ["replace with `C`", "remove `oopsie`"], actions
+    assert all(a["kind"] == "quickfix" and a["diagnostics"] == [diag] for a in actions), actions
+
+    replace, remove = (apply_edit(text, uri, a["edit"]) for a in actions)
+    assert replace == MAIN.read_text() + "\nextern C {\n}\n", replace
+    assert remove == MAIN.read_text() + "\nextern  {\n}\n", remove
+
+    # the replacement actually fixes it
+    c.change_doc(uri, 2, replace)
+    assert c.diagnostics_for(uri, 2) == []
+    assert c.code_actions(uri, start["line"], start["character"]) == []
+    assert c.shutdown() == 0
+
+
+@test
+def code_action_fix_comes_before_go_to(server):
+    c = Client(server, ["utf-8"], SHOW_DOCUMENT)
+    text = MAIN.read_text() + "\ncompt i32 ARROW = Point{.x = 1, .y = 2}->x;\n"
+    uri = open_doc(c, MAIN, text)
+    [diag] = c.diagnostics_for(uri)
+    start = diag["range"]["start"]
+    fix, go_to = c.code_actions(uri, start["line"], start["character"])
+    assert fix["title"] == "replace with `.`", fix
+    assert "compile-time expressions" in go_to["title"] and "command" in go_to, go_to
+    fixed = apply_edit(text, uri, fix["edit"])
+    assert fixed.endswith("Point{.x = 1, .y = 2}.x;\n"), fixed
+    assert c.shutdown() == 0
+
+
+@test
+def no_code_action_for_non_symbol_replacement(server):
+    # "replace with `i32`" names a type rather than holding source text, so it has no edit
+    c = Client(server, ["utf-8"])
+    uri = open_doc(c, MAIN, MAIN.read_text() + "\nstruct S {\n    var x = 1;\n}\n")
+    [diag] = c.diagnostics_for(uri)
+    assert "replace with" in diag["relatedInformation"][0]["message"], diag
+    start = diag["range"]["start"]
+    assert c.code_actions(uri, start["line"], start["character"]) == []
+    assert c.shutdown() == 0
+
+
 def make_project(bearls: str | None) -> Path:
     """a copy of the fixtures plus lone.br (which nothing imports) and, optionally, a .bearls"""
     root = Path(tempfile.mkdtemp(prefix="bearls-project-"))
