@@ -7,7 +7,7 @@ Language server (LSP 3.18 over stdio) for [bear](https://github.com/bear-languag
 ### Requirements
 - CMake >= 3.25, Ninja (or make)
 - C++23 compiler with `<print>` and `<expected>`
-- LLVM dev packages (same as bearc: `llvm-devel` / `llvm-dev` / `brew install llvm`)
+- LLVM dev packages (same as [bearc]([bear](https://github.com/bear-language/bear)): `llvm-devel` / `llvm-dev` / `brew install llvm`)
 - bear-lang sources: `libbearc` is built from source alongside bearls (same compiler + flags)
   - expected at `../bear-lang`; otherwise `-DBEARC_DIR=/path/to/bear-lang/bearc`
 
@@ -38,7 +38,7 @@ bearls [--stdio] [--verbose] [-V|--version] [-h|--help]
 
 - `--stdio`: accepted for compatibility (stdio is the only transport)
 - `--verbose`: logs each analysis + timing to stderr (ends up in your editor's LSP log)
-- fd 1 redirected to stderr at startup; protocol goes to a private dup of the original stdout, so
+- note: fd 1 redirected to stderr at startup; protocol goes to a private dup of the original stdout, so
   stray libbearc output can't corrupt it
 
 ### Project files (`.bearls`)
@@ -105,7 +105,7 @@ Import path order for per-document analysis: document's dir -> `importPaths` -> 
 - UTF-8/16/32 position encodings (UTF-8 preferred, matches bearc's byte spans)
 
 ## Implementation
-bearc does ~0.25-1M LoC/s, so no incremental stuff is done:
+bearc does ~250k-1M LoC/s, so no incremental stuff is done:
 1. document under a [`.bearls`](#project-files-bearls) -> shares the project's `ContextDatabase`
    (built from the project's bearc invocation), if reachable from the project's input file
 2. anything else -> its own `ContextDatabase` rooted at itself
