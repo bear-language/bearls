@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <utility>
+#include <variant>
 
 namespace lsp {
 
@@ -225,6 +226,7 @@ std::vector<Diagnostic> Analysis::diagnostics(std::string_view path, PositionEnc
         .severity = severity_of(error_diagnostic_type(err.error_code)),
         .message = ContextDatabase::message_for_parser_diagnostic(err),
         .related_information = {},
+        .fixes = {},
     };
 }
 
@@ -241,20 +243,21 @@ Analysis::maybe_diagnostic_for_hir_error(hir::FileId fid, PositionEncoding enc,
     if (is_secondary) {
         return {};
     }
-    return Diagnostic{
+    Diagnostic diag{
         .range = lines.range_of(span.start, span.len, enc),
         .severity = severity_of(type),
         .message = db.message_for_diagnostic(did),
-        .related_information = related_information(did, enc),
+        .related_information = {},
+        .fixes = {},
     };
+    add_chain(did, enc, diag);
+    return diag;
 }
 
-std::vector<DiagnosticRelatedInformation> Analysis::related_information(hir::DiagnosticId did,
-                                                                        PositionEncoding enc) {
-    std::vector<DiagnosticRelatedInformation> related;
+void Analysis::add_chain(hir::DiagnosticId did, PositionEncoding enc, Diagnostic& out) {
     const hir::Diagnostic& diag = db.diagnostic(did);
     if (diag.prev.empty() && diag.next.empty()) {
-        return related; // not part of a chain
+        return; // not part of a chain
     }
 
     hir::DiagnosticId head = did;
@@ -270,14 +273,40 @@ std::vector<DiagnosticRelatedInformation> Analysis::related_information(hir::Dia
         if (member == did) {
             continue;
         }
-        if (std::optional<Location> loc = location_of(span, enc)) {
-            related.push_back(DiagnosticRelatedInformation{
-                .location = *std::move(loc),
-                .message = db.message_for_diagnostic(member),
+        std::optional<Location> loc = location_of(span, enc);
+        if (!loc) {
+            continue;
+        }
+        // fix text first, building the message goes back through the Context
+        std::optional<std::string> new_text = fix_text(member);
+        std::string message = db.message_for_diagnostic(member);
+        if (new_text) {
+            out.fixes.push_back(DiagnosticFix{
+                .title = message,
+                .location = *loc,
+                .new_text = *std::move(new_text),
             });
         }
+        out.related_information.push_back(DiagnosticRelatedInformation{
+            .location = *std::move(loc),
+            .message = std::move(message),
+        });
     }
-    return related;
+}
+
+std::optional<std::string> Analysis::fix_text(hir::DiagnosticId did) const {
+    const hir::Diagnostic& diag = db.diagnostic(did);
+    if (diag.code == hir::diag_code::remove) {
+        return std::string{};
+    }
+    if (diag.code == hir::diag_code::replace_with) {
+        // only a symbol is literal source text, anything else (e.g. a type) has no fix
+        if (const auto* replacement
+            = std::get_if<hir::DiagnosticSymbolAfterMessage>(&diag.message_value)) {
+            return std::string{db.symbol(replacement->sid)};
+        }
+    }
+    return std::nullopt;
 }
 
 std::vector<Location> Analysis::definition(std::string_view path, Position pos,

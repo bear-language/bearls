@@ -265,56 +265,73 @@ void Server::on_code_action(const json::Value& id, const json::Value& params) {
         return;
     }
 
-    struct GoTo {
-        std::string title;
-        Location target;
-        const Diagnostic* diagnostic;
-    };
-    std::vector<GoTo> actions;
-    Document* doc = client_shows_documents ? find_document(params) : nullptr;
-    if (doc) {
-        ensure_fresh();
+    json::Value result = json::Value::array();
+    Document* doc = find_document(params);
+    if (!doc) {
+        send_result(id, std::move(result));
+        return;
+    }
+    ensure_fresh();
 
-        // one action per related location, except where a diagnostic under the cursor already is
-        // or where an earlier action already goes
-        std::vector<Location> seen;
-        for (const Diagnostic& diag : doc->diagnostics) {
-            if (touches(diag.range, *range)) {
-                seen.push_back(Location{.uri = doc->uri, .range = diag.range});
-            }
+    // one action per edit suggested by a diagnostic under the cursor
+    std::vector<const DiagnosticFix*> offered;
+    for (const Diagnostic& diag : doc->diagnostics) {
+        if (!touches(diag.range, *range)) {
+            continue;
         }
-        for (const Diagnostic& diag : doc->diagnostics) {
-            if (!touches(diag.range, *range)) {
+        for (const DiagnosticFix& fix : diag.fixes) {
+            if (std::ranges::any_of(offered, [&](const DiagnosticFix* f) { return *f == fix; })) {
                 continue;
             }
-            for (const DiagnosticRelatedInformation& info : diag.related_information) {
-                if (std::ranges::contains(seen, info.location)) {
-                    continue;
-                }
-                seen.push_back(info.location);
-                actions.push_back(GoTo{
-                    .title
-                    = std::format("Go to: {} ({})", info.message, short_location(info.location)),
-                    .target = info.location,
-                    .diagnostic = &diag,
-                });
-            }
+            offered.push_back(&fix);
+            json::Value edit = {{"range", fix.location.range}, {"newText", fix.new_text}};
+            result.push_back({
+                {"title", fix.title},
+                {"kind", "quickfix"},
+                {"diagnostics", json::Value::array({diag})},
+                {"edit",
+                 {{"changes", {{fix.location.uri, json::Value::array({std::move(edit)})}}}}},
+            });
         }
     }
 
-    json::Value result = json::Value::array();
-    for (const GoTo& action : actions) {
-        result.push_back({
-            {"title", action.title},
-            {"kind", "quickfix"},
-            {"diagnostics", json::Value::array({*action.diagnostic})},
-            {"command",
-             {
-                 {"title", action.title},
-                 {"command", SHOW_LOCATION_COMMAND},
-                 {"arguments", json::Value::array({action.target})},
-             }},
-        });
+    // jumping to related information needs the client to show documents
+    if (!client_shows_documents) {
+        send_result(id, std::move(result));
+        return;
+    }
+
+    // one action per related location, except where a diagnostic under the cursor already is
+    // or where an earlier action already goes
+    std::vector<Location> seen;
+    for (const Diagnostic& diag : doc->diagnostics) {
+        if (touches(diag.range, *range)) {
+            seen.push_back(Location{.uri = doc->uri, .range = diag.range});
+        }
+    }
+    for (const Diagnostic& diag : doc->diagnostics) {
+        if (!touches(diag.range, *range)) {
+            continue;
+        }
+        for (const DiagnosticRelatedInformation& info : diag.related_information) {
+            if (std::ranges::contains(seen, info.location)) {
+                continue;
+            }
+            seen.push_back(info.location);
+            const std::string title
+                = std::format("Go to: {} ({})", info.message, short_location(info.location));
+            result.push_back({
+                {"title", title},
+                {"kind", "quickfix"},
+                {"diagnostics", json::Value::array({diag})},
+                {"command",
+                 {
+                     {"title", title},
+                     {"command", SHOW_LOCATION_COMMAND},
+                     {"arguments", json::Value::array({info.location})},
+                 }},
+            });
+        }
     }
     send_result(id, std::move(result));
 }

@@ -78,9 +78,13 @@ class Analysis {
     /// where a span is, nullopt if it has no real source location
     [[nodiscard]] std::optional<Location> location_of(hir::Span span, PositionEncoding enc);
 
-    /// the other diagnostics chained to a diagnostic (e.g. "previous definition here" notes)
-    [[nodiscard]] std::vector<DiagnosticRelatedInformation>
-    related_information(hir::DiagnosticId did, PositionEncoding enc);
+    /// adds the other diagnostics chained to did (e.g. "previous definition here" notes) to out's
+    /// related information, and the edits they suggest to out's fixes
+    void add_chain(hir::DiagnosticId did, PositionEncoding enc, Diagnostic& out);
+
+    /// the text a "remove" / "replace with" diagnostic would put in place of its span, nullopt for
+    /// any other diagnostic
+    [[nodiscard]] std::optional<std::string> fix_text(hir::DiagnosticId did) const;
 
     /// lazily built line index over a file's source in db
     [[nodiscard]] const LineIndex& line_index(hir::FileId fid);
