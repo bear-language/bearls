@@ -1,11 +1,15 @@
 // tests/fixtures/util.br
 
 mod math {
+    /// squares a number
+    ///
+    /// overflows like any other i32 multiplication
     fn square(i32 v) -> i32 {
         return v * v;
     }
 }
 
+/// a point on the integer grid
 struct Point {
     i32 x;
     i32 y;
