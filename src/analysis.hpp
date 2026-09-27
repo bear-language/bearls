@@ -13,6 +13,7 @@
 #include "text.hpp"
 #include <compiler/hir/indexing.hpp>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -45,6 +46,14 @@ struct ScopedIdentifier {
 [[nodiscard]] std::optional<ScopedIdentifier> scoped_identifier_at(std::string_view src,
                                                                    size_t offset);
 
+/// `///` doc comment blocks by the (zero-indexed) line they end on, with the markers stripped
+/// - a block is a run of consecutive lines that start (after indentation) with `///`, and documents
+/// whatever is declared on the line right after it
+using DocComments = std::unordered_map<uint32_t, std::string>;
+
+/// finds every doc comment block in a file's source
+[[nodiscard]] DocComments scan_doc_comments(std::string_view src);
+
 /// argv for analyzing a single file on its own: `bearc <root> -I <import paths>... <extra args>...`
 [[nodiscard]] std::vector<std::string> single_file_args(std::string_view root_path,
                                                         const AnalysisOptions& options);
@@ -71,7 +80,21 @@ class Analysis {
     [[nodiscard]] std::vector<Location> definition(std::string_view path, Position pos,
                                                    PositionEncoding enc);
 
+    /// the doc comments of whatever the identifier at a position resolves to, nullopt if it has
+    /// none
+    [[nodiscard]] std::optional<Hover> hover(std::string_view path, Position pos,
+                                             PositionEncoding enc);
+
   private:
+    /// the identifier at a position and what it resolves to
+    struct Resolved {
+        ScopedIdentifier ident;
+        ContextDatabase::DefQueryResult defs;
+    };
+
+    [[nodiscard]] std::optional<Resolved> resolve(hir::FileId fid, Position pos,
+                                                  PositionEncoding enc);
+
     /// where a definition's name is, nullopt if it has no real source location
     [[nodiscard]] std::optional<Location> location_of(const hir::Def& def, PositionEncoding enc);
 
@@ -89,6 +112,9 @@ class Analysis {
     /// lazily built line index over a file's source in db
     [[nodiscard]] const LineIndex& line_index(hir::FileId fid);
 
+    /// lazily scanned doc comments of a file's source in db
+    [[nodiscard]] const DocComments& doc_comments(hir::FileId fid);
+
     [[nodiscard]] Diagnostic diagnostic_for_parser_error(hir::FileId fid, PositionEncoding enc,
                                                          const compiler_error_t& err);
 
@@ -100,6 +126,8 @@ class Analysis {
     ContextDatabase db;
     /// HirId of a FileId -> index over that file's source (which db owns)
     std::unordered_map<hir::HirId, LineIndex> line_indices;
+    /// HirId of a FileId -> doc comments in that file's source
+    std::unordered_map<hir::HirId, DocComments> file_doc_comments;
 };
 
 } // namespace lsp

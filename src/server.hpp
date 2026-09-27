@@ -98,6 +98,7 @@ class Server {
     void on_initialize(const json::Value& id, const json::Value& params);
     void on_shutdown(const json::Value& id, const json::Value& params);
     void on_definition(const json::Value& id, const json::Value& params);
+    void on_hover(const json::Value& id, const json::Value& params);
     void on_code_action(const json::Value& id, const json::Value& params);
     void on_execute_command(const json::Value& id, const json::Value& params);
 

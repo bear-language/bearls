@@ -78,4 +78,11 @@ void to_json(json::Value& j, const Diagnostic& diag) {
     }
 }
 
+void to_json(json::Value& j, const Hover& hover) {
+    j = {
+        {"contents", {{"kind", "markdown"}, {"value", hover.contents}}},
+        {"range", hover.range},
+    };
+}
+
 } // namespace lsp

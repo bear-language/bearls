@@ -133,6 +133,12 @@ class Client:
             {"textDocument": {"uri": uri}, "position": {"line": line, "character": character}},
         )
 
+    def hover(self, uri: str, line: int, character: int):
+        return self.request(
+            "textDocument/hover",
+            {"textDocument": {"uri": uri}, "position": {"line": line, "character": character}},
+        )
+
     def log(self) -> str:
         """everything the server wrote to stderr so far"""
         self.stderr.seek(0)
@@ -233,6 +239,48 @@ def go_to_definition(server):
     assert c.definition(uri, line, col) is None
     line, col = position_of(text, "return a", 0)
     assert c.definition(uri, line, col) is None
+    assert c.shutdown() == 0
+
+
+@test
+def hover_shows_doc_comments(server):
+    c = Client(server, ["utf-8"])
+    text = MAIN.read_text()
+    uri = open_doc(c, MAIN)
+    c.diagnostics_for(uri)
+
+    cases = [
+        # (needle in main.br, doc comment)
+        ("add(GLOBAL", "adds two numbers"),
+        ("add(i32", "adds two numbers"),  # the declaration itself
+        ("square(3)", "squares a number\n\noverflows like any other i32 multiplication"),
+        ("Point p", "a point on the integer grid"),
+    ]
+    for needle, want in cases:
+        line, col = position_of(text, needle)
+        hover = c.hover(uri, line, col + 1)
+        assert hover is not None, needle
+        assert hover["contents"] == {"kind": "markdown", "value": want}, (needle, hover)
+        name_len = len(needle.split("(")[0].split(" ")[0])
+        assert hover["range"] == {
+            "start": {"line": line, "character": col},
+            "end": {"line": line, "character": col + name_len},
+        }, (needle, hover)
+
+    # undocumented definitions, member accesses and keywords have nothing to show
+    for needle in ("GLOBAL, math", "math..square", "local + p.x", "x;", "return a"):
+        line, col = position_of(text, needle)
+        assert c.hover(uri, line, col) is None, needle
+
+    # a doc comment only documents the line right after it, and //// isn't one
+    edited = text.replace("i32 GLOBAL", "/// separated\n\ni32 GLOBAL").replace(
+        "/// adds", "//// adds"
+    )
+    c.change_doc(uri, 2, edited)
+    c.diagnostics_for(uri, 2)
+    for needle in ("GLOBAL, math", "add(GLOBAL"):
+        line, col = position_of(edited, needle)
+        assert c.hover(uri, line, col) is None, needle
     assert c.shutdown() == 0
 
 
@@ -642,7 +690,7 @@ def lifecycle_errors(server):
 @test
 def unknown_request(server):
     c = Client(server, ["utf-8"])
-    c.send({"jsonrpc": "2.0", "id": 99, "method": "textDocument/hover", "params": {}})
+    c.send({"jsonrpc": "2.0", "id": 99, "method": "textDocument/nope", "params": {}})
     assert c.wait_for(lambda m: m.get("id") == 99)["error"]["code"] == -32601
     c.notify("$/cancelRequest", {"id": 99})  # ignored
     assert c.shutdown() == 0

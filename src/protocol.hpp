@@ -79,6 +79,13 @@ struct Diagnostic {
     std::vector<DiagnosticFix> fixes;
 };
 
+struct Hover {
+    /// markdown
+    std::string contents;
+    /// the identifier hovered over
+    Range range;
+};
+
 /// JSON-RPC and LSP error codes
 enum class ErrorCode : int32_t {
     parse_error = -32700,
@@ -101,6 +108,7 @@ void to_json(json::Value& j, Position pos);
 void to_json(json::Value& j, const Range& range);
 void to_json(json::Value& j, const Location& loc);
 void to_json(json::Value& j, const Diagnostic& diag);
+void to_json(json::Value& j, const Hover& hover);
 
 } // namespace lsp
 

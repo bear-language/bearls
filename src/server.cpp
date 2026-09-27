@@ -107,10 +107,11 @@ void Server::handle_message(std::string_view raw) {
 
 void Server::handle_request(const json::Value& id, std::string_view method,
                             const json::Value& params) {
-    static constexpr std::array<std::pair<std::string_view, RequestHandler>, 5> HANDLERS{{
+    static constexpr std::array<std::pair<std::string_view, RequestHandler>, 6> HANDLERS{{
         {"initialize", &Server::on_initialize},
         {"shutdown", &Server::on_shutdown},
         {"textDocument/definition", &Server::on_definition},
+        {"textDocument/hover", &Server::on_hover},
         {"textDocument/codeAction", &Server::on_code_action},
         {"workspace/executeCommand", &Server::on_execute_command},
     }};
@@ -225,6 +226,7 @@ void Server::on_initialize(const json::Value& id, const json::Value& params) {
                                   {"save", {{"includeText", false}}},
                               }},
                              {"definitionProvider", true},
+                             {"hoverProvider", true},
                              {"codeActionProvider", true},
                              {"executeCommandProvider",
                               {{"commands", json::Value::array({SHOW_LOCATION_COMMAND})}}},
@@ -256,6 +258,22 @@ void Server::on_definition(const json::Value& id, const json::Value& params) {
         }
     }
     send_result(id, locations.empty() ? json::Value(nullptr) : json::Value(locations));
+}
+
+void Server::on_hover(const json::Value& id, const json::Value& params) {
+    const std::optional<Position> pos = parse_position(json::get(params, "position"));
+    if (!pos) {
+        send_error(id, ErrorCode::invalid_params, "missing or malformed position");
+        return;
+    }
+    std::optional<Hover> hover;
+    if (Document* doc = find_document(params)) {
+        ensure_fresh();
+        if (Analysis* analysis = analysis_of(*doc)) {
+            hover = analysis->hover(doc->path, *pos, encoding);
+        }
+    }
+    send_result(id, hover ? json::Value(*hover) : json::Value(nullptr));
 }
 
 void Server::on_code_action(const json::Value& id, const json::Value& params) {

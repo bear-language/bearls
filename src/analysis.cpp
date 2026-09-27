@@ -98,6 +98,45 @@ bool same_start(const Location& a, const Location& b) noexcept {
 
 } // namespace
 
+DocComments scan_doc_comments(std::string_view src) {
+    DocComments out;
+    std::string block;
+    bool in_block = false;
+    uint32_t line = 0;
+    for (size_t start = 0; start <= src.size(); ++line) {
+        const size_t newline = src.find('\n', start);
+        const size_t end = newline == std::string_view::npos ? src.size() : newline;
+        std::string_view content = src.substr(start, end - start);
+        if (content.ends_with('\r')) {
+            content.remove_suffix(1);
+        }
+        const size_t indent = content.find_first_not_of(" \t");
+        const std::string_view comment
+            = indent == std::string_view::npos ? std::string_view{} : content.substr(indent);
+        // four or more slashes is an ordinary comment (e.g. a //////// separator)
+        if (comment.starts_with("///") && !comment.starts_with("////")) {
+            std::string_view text = comment.substr(3);
+            if (text.starts_with(' ')) {
+                text.remove_prefix(1);
+            }
+            if (in_block) {
+                block += '\n';
+            }
+            block += text;
+            in_block = true;
+        } else if (in_block) {
+            out.emplace(line - 1, std::move(block));
+            block.clear();
+            in_block = false;
+        }
+        start = end + 1;
+    }
+    if (in_block) {
+        out.emplace(line - 1, std::move(block));
+    }
+    return out;
+}
+
 std::vector<std::string> single_file_args(std::string_view root_path,
                                           const AnalysisOptions& options) {
     std::vector<std::string> args;
@@ -174,6 +213,14 @@ bool Analysis::includes_file(std::string_view path) const {
 
 const LineIndex& Analysis::line_index(hir::FileId fid) {
     return line_indices.try_emplace(fid.raw(), db.file_source(fid)).first->second;
+}
+
+const DocComments& Analysis::doc_comments(hir::FileId fid) {
+    auto it = file_doc_comments.find(fid.raw());
+    if (it == file_doc_comments.end()) {
+        it = file_doc_comments.emplace(fid.raw(), scan_doc_comments(db.file_source(fid))).first;
+    }
+    return it->second;
 }
 
 std::vector<Diagnostic> Analysis::diagnostics(std::string_view path, PositionEncoding enc) {
@@ -309,18 +356,13 @@ std::optional<std::string> Analysis::fix_text(hir::DiagnosticId did) const {
     return std::nullopt;
 }
 
-std::vector<Location> Analysis::definition(std::string_view path, Position pos,
-                                           PositionEncoding enc) {
-    const hir::OptId<hir::FileId> maybe_fid = db.file_id_for_path(path);
-    if (maybe_fid.empty()) {
-        return {};
-    }
-    const hir::FileId fid = maybe_fid.as_id();
+std::optional<Analysis::Resolved> Analysis::resolve(hir::FileId fid, Position pos,
+                                                    PositionEncoding enc) {
     const LineIndex& lines = line_index(fid);
-    const std::optional<ScopedIdentifier> ident
+    std::optional<ScopedIdentifier> ident
         = scoped_identifier_at(db.file_source(fid), lines.offset_of(pos, enc));
     if (!ident) {
-        return {};
+        return std::nullopt;
     }
 
     // the span only serves to find the innermost scope enclosing the identifier
@@ -332,9 +374,23 @@ std::vector<Location> Analysis::definition(std::string_view path, Position pos,
     span.line = byte_pos.line;
     span.col = byte_pos.character;
 
-    const ContextDatabase::DefQueryResult result = db.query_def(span, ident->components);
+    ContextDatabase::DefQueryResult defs = db.query_def(span, ident->components);
+    return Resolved{.ident = *std::move(ident), .defs = std::move(defs)};
+}
+
+std::vector<Location> Analysis::definition(std::string_view path, Position pos,
+                                           PositionEncoding enc) {
+    const hir::OptId<hir::FileId> maybe_fid = db.file_id_for_path(path);
+    if (maybe_fid.empty()) {
+        return {};
+    }
+    const std::optional<Resolved> resolved = resolve(maybe_fid.as_id(), pos, enc);
+    if (!resolved) {
+        return {};
+    }
 
     // one name can resolve in several namespaces at once, list the most specific first
+    const ContextDatabase::DefQueryResult& result = resolved->defs;
     std::vector<Location> locations;
     for (const std::optional<hir::Def>* def : {&result.variable, &result.type, &result.mod}) {
         if (!def->has_value()) {
@@ -348,6 +404,53 @@ std::vector<Location> Analysis::definition(std::string_view path, Position pos,
         }
     }
     return locations;
+}
+
+std::optional<Hover> Analysis::hover(std::string_view path, Position pos, PositionEncoding enc) {
+    const hir::OptId<hir::FileId> maybe_fid = db.file_id_for_path(path);
+    if (maybe_fid.empty()) {
+        return std::nullopt;
+    }
+    const hir::FileId fid = maybe_fid.as_id();
+    const std::optional<Resolved> resolved = resolve(fid, pos, enc);
+    if (!resolved) {
+        return std::nullopt;
+    }
+
+    // a doc comment documents the line right after it, so look for a block ending on the line
+    // before each definition's declaration starts, most specific definition first
+    const ContextDatabase::DefQueryResult& result = resolved->defs;
+    std::vector<const std::string*> docs;
+    for (const std::optional<hir::Def>* def : {&result.variable, &result.type, &result.mod}) {
+        if (!def->has_value() || (*def)->span.is_generated()) {
+            continue;
+        }
+        const hir::Span span = (*def)->span;
+        const uint32_t line = line_index(span.file_id).position_of(span.start, PositionEncoding::utf8).line;
+        if (line == 0) {
+            continue;
+        }
+        const DocComments& comments = doc_comments(span.file_id);
+        const auto it = comments.find(line - 1);
+        if (it != comments.end() && !std::ranges::contains(docs, &it->second)) {
+            docs.push_back(&it->second);
+        }
+    }
+    if (docs.empty()) {
+        return std::nullopt;
+    }
+
+    Hover out{
+        .contents = {},
+        .range = line_index(fid).range_of(resolved->ident.start, resolved->ident.len, enc),
+    };
+    for (const std::string* doc : docs) {
+        if (!out.contents.empty()) {
+            out.contents += "\n\n---\n\n";
+        }
+        out.contents += *doc;
+    }
+    return out;
 }
 
 std::optional<Location> Analysis::location_of(hir::Span span, PositionEncoding enc) {

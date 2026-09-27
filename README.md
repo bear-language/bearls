@@ -85,7 +85,7 @@ Import path order for per-document analysis: document's dir -> `importPaths` -> 
 `import-paths` -> workspace folders. Document's dir first mirrors `bearc main.br -I <dir>`.
 
 ## TODOs 
-- no go to definition for member accesses (`p.x`, `self.bar_`): needs the receiver's type, which
+- no go to definition or hover for member accesses (`p.x`, `self.bar_`): needs the receiver's type, which
   `ContextDatabase` doesn't expose yet, so this resolves to nothing right now
 - never-saved documents aren't analyzed (bearc needs the root on disk), but after first save, unsaved
   edits are used as usual
@@ -98,6 +98,10 @@ Import path order for per-document analysis: document's dir -> `importPaths` -> 
 - go to definition
   - plain and scoped identifiers (`foo`, `foo..bar`) across files
   - cursor on a qualifier jumps to the qualifier (`math` in `math..square` -> `mod math`)
+- hover
+  - `///` doc comments of the definition an identifier resolves to (same identifiers as go to
+    definition)
+  - a doc comment is a run of consecutive `///` lines, documenting the line right after it
 - code actions for chained diagnostics
   - one *Go to: previous definition here (util.br:3)* action per related location (skips duplicate locations)
   - uses `window/showDocument` via `bearls.showLocation`; only offered if the client supports it
