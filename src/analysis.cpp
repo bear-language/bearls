@@ -375,7 +375,8 @@ std::optional<Analysis::Resolved> Analysis::resolve(hir::FileId fid, Position po
     span.col = byte_pos.character;
 
     ContextDatabase::DefQueryResult defs = db.query_def(span, ident->components);
-    return Resolved{.ident = *std::move(ident), .defs = std::move(defs)};
+    const ContextDatabase::DefIdQueryResult ids = db.query_def_id(span, ident->components);
+    return Resolved{.ident = *std::move(ident), .defs = std::move(defs), .ids = ids};
 }
 
 std::vector<Location> Analysis::definition(std::string_view path, Position pos,
@@ -417,40 +418,53 @@ std::optional<Hover> Analysis::hover(std::string_view path, Position pos, Positi
         return std::nullopt;
     }
 
-    // a doc comment documents the line right after it, so look for a block ending on the line
-    // before each definition's declaration starts, most specific definition first
+    // one section per definition, most specific first: its preview, then its doc comments if any
     const ContextDatabase::DefQueryResult& result = resolved->defs;
-    std::vector<const std::string*> docs;
-    for (const std::optional<hir::Def>* def : {&result.variable, &result.type, &result.mod}) {
-        if (!def->has_value() || (*def)->span.is_generated()) {
+    const ContextDatabase::DefIdQueryResult& ids = resolved->ids;
+    std::vector<hir::DefId> shown;
+    std::string contents;
+    for (const auto& [def, maybe_did] : {std::pair{&result.variable, ids.variable_id},
+                                         std::pair{&result.type, ids.type_id},
+                                         std::pair{&result.mod, ids.mod_id}}) {
+        if (!def->has_value() || maybe_did.empty()
+            || std::ranges::contains(shown, maybe_did.as_id())) {
             continue;
         }
-        const hir::Span span = (*def)->span;
-        const uint32_t line = line_index(span.file_id).position_of(span.start, PositionEncoding::utf8).line;
-        if (line == 0) {
-            continue;
+        const hir::DefId did = maybe_did.as_id();
+        shown.push_back(did);
+        if (!contents.empty()) {
+            contents += "\n\n---\n\n";
         }
-        const DocComments& comments = doc_comments(span.file_id);
-        const auto it = comments.find(line - 1);
-        if (it != comments.end() && !std::ranges::contains(docs, &it->second)) {
-            docs.push_back(&it->second);
+        contents += db.pretty_preview_for_def(did, hir::string_preview_mode::ticks_bear);
+        if (const std::string* doc = doc_comment_of(**def)) {
+            contents += "\n\n";
+            contents += *doc;
         }
     }
-    if (docs.empty()) {
+    if (contents.empty()) {
         return std::nullopt;
     }
-
-    Hover out{
-        .contents = {},
+    return Hover{
+        .contents = std::move(contents),
         .range = line_index(fid).range_of(resolved->ident.start, resolved->ident.len, enc),
     };
-    for (const std::string* doc : docs) {
-        if (!out.contents.empty()) {
-            out.contents += "\n\n---\n\n";
-        }
-        out.contents += *doc;
+}
+
+const std::string* Analysis::doc_comment_of(const hir::Def& def) {
+    // a doc comment documents the line right after it, so look for a block ending on the line
+    // before the declaration starts
+    const hir::Span span = def.span;
+    if (span.is_generated()) {
+        return nullptr;
     }
-    return out;
+    const uint32_t line
+        = line_index(span.file_id).position_of(span.start, PositionEncoding::utf8).line;
+    if (line == 0) {
+        return nullptr;
+    }
+    const DocComments& comments = doc_comments(span.file_id);
+    const auto it = comments.find(line - 1);
+    return it == comments.end() ? nullptr : &it->second;
 }
 
 std::optional<Location> Analysis::location_of(hir::Span span, PositionEncoding enc) {

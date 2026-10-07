@@ -243,32 +243,48 @@ def go_to_definition(server):
 
 
 @test
-def hover_shows_doc_comments(server):
+def hover_shows_preview_and_doc_comments(server):
     c = Client(server, ["utf-8"])
     text = MAIN.read_text()
     uri = open_doc(c, MAIN)
     c.diagnostics_for(uri)
 
+    def check(hover, needle, canonical, decl, doc):
+        """a bear code block previewing the definition, then its doc comments if it has any"""
+        assert hover is not None, needle
+        assert hover["contents"]["kind"] == "markdown", (needle, hover)
+        value = hover["contents"]["value"]
+        preview = f"```bear\n// canonical name: {canonical}\n{decl}"
+        assert value.startswith(preview), (needle, value)
+        assert value.endswith("\n```" + (f"\n\n{doc}" if doc else "")), (needle, value)
+
     cases = [
-        # (needle in main.br, doc comment)
-        ("add(GLOBAL", "adds two numbers"),
-        ("add(i32", "adds two numbers"),  # the declaration itself
-        ("square(3)", "squares a number\n\noverflows like any other i32 multiplication"),
-        ("Point p", "a point on the integer grid"),
+        # (needle in main.br, canonical name, start of the declaration, doc comment)
+        ("add(GLOBAL", "add", "fn add(i32, i32) -> i32", "adds two numbers"),
+        ("add(i32", "add", "fn add(i32, i32) -> i32", "adds two numbers"),  # the declaration
+        (
+            "square(3)",
+            "math..square",
+            "fn math..square(i32) -> i32",
+            "squares a number\n\noverflows like any other i32 multiplication",
+        ),
+        ("Point p", "Point", "struct Point {", "a point on the integer grid"),
+        ("GLOBAL, math", "GLOBAL", "i32 GLOBAL", None),
+        ("math..square", "math", "mod math", None),
+        ("local + p.x", "local", "i32 local", None),
     ]
-    for needle, want in cases:
+    for needle, canonical, decl, doc in cases:
         line, col = position_of(text, needle)
         hover = c.hover(uri, line, col + 1)
-        assert hover is not None, needle
-        assert hover["contents"] == {"kind": "markdown", "value": want}, (needle, hover)
-        name_len = len(needle.split("(")[0].split(" ")[0])
+        check(hover, needle, canonical, decl, doc)
+        name_len = len(needle.split("(")[0].split(" ")[0].split(",")[0].split(".")[0])
         assert hover["range"] == {
             "start": {"line": line, "character": col},
             "end": {"line": line, "character": col + name_len},
         }, (needle, hover)
 
-    # undocumented definitions, member accesses and keywords have nothing to show
-    for needle in ("GLOBAL, math", "math..square", "local + p.x", "x;", "return a"):
+    # member accesses and keywords resolve to nothing
+    for needle in ("x;", "return a"):
         line, col = position_of(text, needle)
         assert c.hover(uri, line, col) is None, needle
 
@@ -278,9 +294,12 @@ def hover_shows_doc_comments(server):
     )
     c.change_doc(uri, 2, edited)
     c.diagnostics_for(uri, 2)
-    for needle in ("GLOBAL, math", "add(GLOBAL"):
+    for needle, canonical, decl in (
+        ("GLOBAL, math", "GLOBAL", "i32 GLOBAL"),
+        ("add(GLOBAL", "add", "fn add(i32, i32) -> i32"),
+    ):
         line, col = position_of(edited, needle)
-        assert c.hover(uri, line, col) is None, needle
+        check(c.hover(uri, line, col), needle, canonical, decl, None)
     assert c.shutdown() == 0
 
 
