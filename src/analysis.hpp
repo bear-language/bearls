@@ -80,8 +80,8 @@ class Analysis {
     [[nodiscard]] std::vector<Location> definition(std::string_view path, Position pos,
                                                    PositionEncoding enc);
 
-    /// the doc comments of whatever the identifier at a position resolves to, nullopt if it has
-    /// none
+    /// a preview of whatever the identifier at a position resolves to, followed by its doc
+    /// comments (if any), nullopt if it resolves to nothing
     [[nodiscard]] std::optional<Hover> hover(std::string_view path, Position pos,
                                              PositionEncoding enc);
 
@@ -90,6 +90,7 @@ class Analysis {
     struct Resolved {
         ScopedIdentifier ident;
         ContextDatabase::DefQueryResult defs;
+        ContextDatabase::DefIdQueryResult ids;
     };
 
     [[nodiscard]] std::optional<Resolved> resolve(hir::FileId fid, Position pos,
@@ -111,6 +112,9 @@ class Analysis {
 
     /// lazily built line index over a file's source in db
     [[nodiscard]] const LineIndex& line_index(hir::FileId fid);
+
+    /// the doc comment block right above a definition, nullptr if it has none
+    [[nodiscard]] const std::string* doc_comment_of(const hir::Def& def);
 
     /// lazily scanned doc comments of a file's source in db
     [[nodiscard]] const DocComments& doc_comments(hir::FileId fid);
