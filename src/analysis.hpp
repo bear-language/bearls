@@ -109,6 +109,8 @@ class Analysis {
     /// the text a "remove" / "replace with" diagnostic would put in place of its span, nullopt for
     /// any other diagnostic
     [[nodiscard]] std::optional<std::string> fix_text(hir::DiagnosticId did) const;
+    /// primary message, with the subcode's text (if any) appended in parentheses
+    [[nodiscard]] std::string message_for(hir::DiagnosticId did);
 
     /// lazily built line index over a file's source in db
     [[nodiscard]] const LineIndex& line_index(hir::FileId fid);

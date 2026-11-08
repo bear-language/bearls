@@ -293,7 +293,7 @@ Analysis::maybe_diagnostic_for_hir_error(hir::FileId fid, PositionEncoding enc,
     Diagnostic diag{
         .range = lines.range_of(span.start, span.len, enc),
         .severity = severity_of(type),
-        .message = db.message_for_diagnostic(did),
+        .message = message_for(did),
         .related_information = {},
         .fixes = {},
     };
@@ -326,7 +326,7 @@ void Analysis::add_chain(hir::DiagnosticId did, PositionEncoding enc, Diagnostic
         }
         // fix text first, building the message goes back through the Context
         std::optional<std::string> new_text = fix_text(member);
-        std::string message = db.message_for_diagnostic(member);
+        std::string message = message_for(member);
         if (new_text) {
             out.fixes.push_back(DiagnosticFix{
                 .title = message,
@@ -339,6 +339,16 @@ void Analysis::add_chain(hir::DiagnosticId did, PositionEncoding enc, Diagnostic
             .message = std::move(message),
         });
     }
+}
+
+std::string Analysis::message_for(hir::DiagnosticId did) {
+    std::string message = db.message_for_diagnostic(did);
+    if (const auto* sc = std::get_if<hir::DiagnosticSubCode>(&db.diagnostic(did).value)) {
+        message += " (";
+        message += hir::Diagnostic::message_for_code(sc->sub_code);
+        message += ')';
+    }
+    return message;
 }
 
 std::optional<std::string> Analysis::fix_text(hir::DiagnosticId did) const {
