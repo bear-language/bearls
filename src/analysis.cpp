@@ -12,6 +12,7 @@
 #include "utils/vector.h"
 #include <algorithm>
 #include <cstdint>
+#include <tuple>
 #include <utility>
 #include <variant>
 
@@ -89,6 +90,17 @@ std::optional<size_t> find_identifier(std::string_view src, size_t start, size_t
         }
     }
     return std::nullopt;
+}
+
+constexpr bool same_span(hir::Span a, hir::Span b) noexcept {
+    return a.file_id == b.file_id && a.start == b.start && a.len == b.len;
+}
+
+/// notes bearc appends to a chain to point at the code that asked for the code containing an error
+/// - not in_generic_instantiation_of_type, whose span is the generic's declaration
+constexpr bool is_instantiation_note(hir::diag_code code) noexcept {
+    return code == hir::diag_code::in_generic_instantiated_here
+           || code == hir::diag_code::called_here;
 }
 
 bool same_start(const Location& a, const Location& b) noexcept {
@@ -241,18 +253,24 @@ std::vector<Diagnostic> Analysis::diagnostics(std::string_view path, PositionEnc
             *static_cast<const compiler_error_t*>(vector_at(&parser_errors.list_vec, i))));
     }
 
-    // hir (semantic) diagnostics
+    // hir (semantic) diagnostics, without chains that duplicate one another
     // - ids are copied out since building messages goes back through the Context
-    const auto& hir_ids = db.diagnostics_for_file(fid);
-    const std::vector<hir::DiagnosticId> hir_diagnostic_ids(hir_ids.begin(), hir_ids.end());
-    out.reserve(out.size() + hir_diagnostic_ids.size());
-    for (const hir::DiagnosticId did : hir_diagnostic_ids) {
-        const std::optional<Diagnostic> maybe_diag = maybe_diagnostic_for_hir_error(fid, enc, did);
-        if (!maybe_diag) {
-            continue;
-        }
-        out.push_back(maybe_diag.value());
+    std::vector<hir::DiagnosticId> hir_diagnostic_ids;
+    for (const hir::DiagnosticId did : db.unique_diagnostics_for_file(fid)) {
+        hir_diagnostic_ids.push_back(did);
     }
+    for (const hir::DiagnosticId did : hir_diagnostic_ids) {
+        append_diagnostics_for_hir_error(enc, did, out);
+    }
+
+    // in source order, where a parser diagnostic sharing a span with a hir diagnostic stays ahead
+    // of it (the sort is stable and parser diagnostics were added first) so it's shown on top
+    std::ranges::stable_sort(out, [](const Diagnostic& a, const Diagnostic& b) {
+        return std::tie(a.range.start.line, a.range.start.character, a.range.end.line,
+                        a.range.end.character)
+               < std::tie(b.range.start.line, b.range.start.character, b.range.end.line,
+                          b.range.end.character);
+    });
     return out;
 }
 
@@ -277,47 +295,134 @@ std::vector<Diagnostic> Analysis::diagnostics(std::string_view path, PositionEnc
     };
 }
 
-[[nodiscard]] std::optional<Diagnostic>
-Analysis::maybe_diagnostic_for_hir_error(hir::FileId fid, PositionEncoding enc,
-                                         hir::DiagnosticId did) {
-    const hir::Span span = db.diagnostic(did).span;
-    const hir::diag_type type = db.diagnostic(did).type;
-    const LineIndex& lines = line_index(fid);
-    // a note/help that follows another diagnostic in its chain (e.g. "previous definition
-    // here") is only reported as relatedInformation on the chain's other members
-    const bool is_secondary = db.diagnostic(did).prev.has_value()
-                              && (type == hir::diag_type::note || type == hir::diag_type::help);
-    if (is_secondary) {
-        return {};
+hir::DiagnosticId Analysis::chain_head(hir::DiagnosticId did) const {
+    for (size_t i = 0; i < MAX_DIAGNOSTIC_CHAIN_LEN && db.diagnostic(did).prev.has_value(); ++i) {
+        did = db.diagnostic(did).prev.as_id();
     }
-    Diagnostic diag{
-        .range = lines.range_of(span.start, span.len, enc),
-        .severity = severity_of(type),
-        .message = message_for(did),
+    return did;
+}
+
+hir::DiagnosticId Analysis::chain_anchor(hir::DiagnosticId head) const {
+    hir::DiagnosticId anchor = head;
+    hir::OptId<hir::DiagnosticId> curr = head;
+    for (size_t i = 0; i < MAX_DIAGNOSTIC_CHAIN_LEN && curr.has_value(); ++i) {
+        const hir::Diagnostic& member = db.diagnostic(curr.as_id());
+        // later notes are further out, the last one is where the user's own code asked for it
+        if (is_instantiation_note(member.code) && !member.span.is_generated()
+            && !db.file_is_intrinsic(member.span.file_id)) {
+            anchor = curr.as_id();
+        }
+        curr = member.next;
+    }
+    return anchor;
+}
+
+void Analysis::append_diagnostics_for_hir_error(PositionEncoding enc, hir::DiagnosticId did,
+                                                std::vector<Diagnostic>& out) {
+    const hir::DiagnosticId head = chain_head(did);
+    const hir::DiagnosticId anchor = chain_anchor(head);
+
+    if (did == anchor) {
+        // the chain's primary diagnostic: the head's message, but reported where the generic was
+        // instantiated / the compt function was called (if anywhere), the head is still reported
+        // inside the body below
+        const hir::Span span = db.diagnostic(anchor).span;
+        std::string message = message_for(head);
+        if (anchor != head) {
+            message += '\n';
+            message += message_for(anchor);
+        }
+        Diagnostic diag{
+            .range = line_index(span.file_id).range_of(span.start, span.len, enc),
+            .severity = severity_of(db.diagnostic(head).type),
+            .message = std::move(message),
+            .related_information = {},
+            .fixes = {},
+        };
+        add_chain(head, anchor, enc, diag);
+        out.push_back(std::move(diag));
+        return;
+    }
+
+    const hir::Diagnostic& diag = db.diagnostic(did);
+    // anything but a note/help that follows another diagnostic in its chain is reported on its own
+    // - this includes a head whose chain is anchored elsewhere, so an error inside a generic / compt
+    // function's body shows up both there and where it was instantiated / called
+    if (!is_secondary_in_chain(did)) {
+        const hir::Span span = diag.span;
+        Diagnostic primary{
+            .range = line_index(span.file_id).range_of(span.start, span.len, enc),
+            .severity = severity_of(diag.type),
+            .message = message_for(did),
+            .related_information = {},
+            .fixes = {},
+        };
+        add_chain(head, did, enc, primary);
+        out.push_back(std::move(primary));
+        return;
+    }
+
+    // notes are only related information on the chain's primary diagnostic, but a help pointing
+    // somewhere else than the diagnostic it belongs to is also reported on its own, so it's visible
+    // where it applies (it stays related information / a fix on that diagnostic too)
+    if (diag.type != hir::diag_type::help) {
+        return;
+    }
+    // the help belongs to the closest diagnostic before it that's reported in its own right
+    hir::DiagnosticId parent = diag.prev.as_id();
+    for (size_t i = 0;
+         i < MAX_DIAGNOSTIC_CHAIN_LEN && parent != head && is_secondary_in_chain(parent); ++i) {
+        parent = db.diagnostic(parent).prev.as_id();
+    }
+    const hir::DiagnosticId reported_parent = parent == head ? anchor : parent;
+    if (same_span(diag.span, db.diagnostic(parent).span)
+        || same_span(diag.span, db.diagnostic(reported_parent).span)) {
+        return;
+    }
+    const std::optional<Location> loc = location_of(diag.span, enc);
+    if (!loc) {
+        return;
+    }
+    std::optional<std::string> new_text = fix_text(did);
+    std::string message = message_for(did);
+    Diagnostic help{
+        .range = loc->range,
+        .severity = DiagnosticSeverity::hint,
+        .message = message,
         .related_information = {},
         .fixes = {},
     };
-    add_chain(did, enc, diag);
-    return diag;
+    if (new_text) {
+        help.fixes.push_back(DiagnosticFix{
+            .title = std::move(message),
+            .location = *loc,
+            .new_text = *std::move(new_text),
+        });
+    }
+    if (std::optional<Location> parent_loc
+        = location_of(db.diagnostic(reported_parent).span, enc)) {
+        help.related_information.push_back(DiagnosticRelatedInformation{
+            .location = *std::move(parent_loc),
+            .message = message_for(parent),
+        });
+    }
+    out.push_back(std::move(help));
 }
 
-void Analysis::add_chain(hir::DiagnosticId did, PositionEncoding enc, Diagnostic& out) {
+bool Analysis::is_secondary_in_chain(hir::DiagnosticId did) const {
     const hir::Diagnostic& diag = db.diagnostic(did);
-    if (diag.prev.empty() && diag.next.empty()) {
-        return; // not part of a chain
-    }
+    return diag.prev.has_value()
+           && (diag.type == hir::diag_type::note || diag.type == hir::diag_type::help);
+}
 
-    hir::DiagnosticId head = did;
-    for (size_t i = 0; i < MAX_DIAGNOSTIC_CHAIN_LEN && db.diagnostic(head).prev.has_value(); ++i) {
-        head = db.diagnostic(head).prev.as_id();
-    }
-
+void Analysis::add_chain(hir::DiagnosticId head, hir::DiagnosticId reported_at,
+                         PositionEncoding enc, Diagnostic& out) {
     hir::OptId<hir::DiagnosticId> curr = head;
     for (size_t i = 0; i < MAX_DIAGNOSTIC_CHAIN_LEN && curr.has_value(); ++i) {
         const hir::DiagnosticId member = curr.as_id();
         const hir::Span span = db.diagnostic(member).span;
         curr = db.diagnostic(member).next;
-        if (member == did) {
+        if (member == reported_at) {
             continue;
         }
         std::optional<Location> loc = location_of(span, enc);
