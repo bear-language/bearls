@@ -265,7 +265,7 @@ def hover_shows_preview_and_doc_comments(server):
         (
             "square(3)",
             "math..square",
-            "fn math..square(i32) -> i32",
+            "fn square(i32) -> i32",  # the canonical name is only in the comment
             "squares a number\n\noverflows like any other i32 multiplication",
         ),
         ("Point p", "Point", "struct Point {", "a point on the integer grid"),
@@ -513,9 +513,148 @@ def no_code_action_for_non_symbol_replacement(server):
     assert c.shutdown() == 0
 
 
+def start_of(diag: dict) -> tuple[int, int]:
+    start = diag["range"]["start"]
+    return start["line"], start["character"]
+
+
+@test
+def compt_call_error_is_reported_at_the_call(server):
+    c = Client(server, ["utf-8"])
+    text = MAIN.read_text() + "\ncompt fn boom(i32 v) -> i32 => v / 0;\ncompt i32 BOOM = boom(3);\n"
+    uri = open_doc(c, MAIN, text)
+    diags = c.diagnostics_for(uri)
+    [diag] = [d for d in diags if start_of(d) == position_of(text, "boom(3)")]
+    assert diag["severity"] == 1, diag
+    assert diag["message"].startswith("dividing by zero"), diag
+    assert "called here" in diag["message"], diag
+    # the error inside the function's body is still one jump away
+    [body] = diag["relatedInformation"]
+    assert (body["location"]["range"]["start"]["line"], body["location"]["range"]["start"]["character"]) == position_of(text, "0;"), body
+    # and it's reported inside the body too, pointing back at the call
+    [in_body] = [d for d in diags if start_of(d) == position_of(text, "0;")]
+    assert in_body["message"].startswith("dividing by zero"), in_body
+    assert in_body["severity"] == 1, in_body
+    assert any(r["location"]["range"] == diag["range"] for r in in_body["relatedInformation"]), in_body
+    assert len(diags) == 2, diags
+    assert c.shutdown() == 0
+
+
+GENERIC_ERROR = """
+struct Arr<T> {
+    T val;
+    Nope bad;
+}
+
+struct Pair<T> {
+    Arr<T> inner;
+}
+
+fn make_pair() {
+    var a = Pair::<i32>{};
+}
+"""
+
+
+@test
+def generic_error_is_reported_where_it_was_instantiated(server):
+    c = Client(server, ["utf-8"])
+    text = MAIN.read_text() + GENERIC_ERROR
+    uri = open_doc(c, MAIN, text)
+    diags = c.diagnostics_for(uri)
+    undefineds = [d for d in diags if d["message"].startswith("use of undefined type")]
+    assert len(undefineds) == 2, diags
+    # at the outermost instantiation, which is in the user's own code
+    [undefined] = [d for d in undefineds if start_of(d) == position_of(text, "i32>{}")]
+    related = [(r["location"]["range"]["start"]["line"], r["location"]["range"]["start"]["character"]) for r in undefined["relatedInformation"]]
+    assert position_of(text, "Nope") in related, undefined
+    assert position_of(text, "T> inner") in related, undefined
+    # it's reported inside the generic's body too, pointing out to the instantiations
+    [in_body] = [d for d in diags if start_of(d) == position_of(text, "Nope")]
+    assert in_body["message"] == undefined["message"].split("\n")[0], in_body
+    in_body_related = [r["location"]["range"] for r in in_body["relatedInformation"]]
+    assert undefined["range"] in in_body_related, in_body
+    assert c.shutdown() == 0
+
+
+CONTRACT_MISMATCH = """
+contract Shape {
+    fn sides() -> i32;
+    fn scale(i32 by) -> i32;
+}
+
+struct Square has Shape {
+    i32 len;
+
+    fn sides() -> u8 {
+        return 4;
+    }
+    fn scale(u8 by) -> i32 {
+        return 1;
+    }
+}
+"""
+
+
+@test
+def help_elsewhere_is_also_reported_on_its_own(server):
+    c = Client(server, ["utf-8"])
+    text = MAIN.read_text() + CONTRACT_MISMATCH
+    uri = open_doc(c, MAIN, text)
+    diags = c.diagnostics_for(uri)
+    errors = [d for d in diags if d["severity"] == 1]
+    hints = [d for d in diags if d["severity"] == 4]
+    assert len(errors) == 2 and len(hints) == 2, diags
+    sides_error = next(d for d in errors if "`sides`" in d["message"])
+    scale_error = next(d for d in errors if "`scale`" in d["message"])
+
+    # each help sits where it applies, pointing back at the error it belongs to
+    sides_help = next(d for d in hints if start_of(d) == position_of(text, "u8 {"))
+    scale_help = next(d for d in hints if start_of(d) == position_of(text, "u8 by"))
+    for help, error in ((sides_help, sides_error), (scale_help, scale_error)):
+        assert help["message"] == "replace with `i32`", help
+        [parent] = help["relatedInformation"]
+        assert parent["location"]["range"] == error["range"], (help, error)
+        assert parent["message"] == error["message"], (help, error)
+
+    # and is still related information on that error
+    assert any(
+        r["message"] == "replace with `i32`"
+        and r["location"]["range"] == sides_help["range"]
+        for r in sides_error["relatedInformation"]
+    ), sides_error
+    assert c.shutdown() == 0
+
+
+@test
+def duplicate_diagnostic_chains_are_reported_once(server):
+    # each instantiation of W re-emits the same chain
+    c = Client(server, ["utf-8"])
+    text = "struct W<T> { compt var v = W..v::<W::T>; }\n\nW<i32> _0 = {};\n"
+    uri = open_doc(c, MAIN, text)
+    diags = c.diagnostics_for(uri)
+    assert diags, diags
+    keys = [json.dumps(d, sort_keys=True) for d in diags]
+    assert len(keys) == len(set(keys)), diags
+    assert len(diags) < 10, diags
+    assert c.shutdown() == 0
+
+
+@test
+def diagnostics_are_in_source_order(server):
+    c = Client(server, ["utf-8"])
+    text = MAIN.read_text() + CONTRACT_MISMATCH + "\nfn broken() -> i32 {\n    return 1\n}\n"
+    uri = open_doc(c, MAIN, text)
+    diags = c.diagnostics_for(uri)
+    starts = [start_of(d) for d in diags]
+    assert starts == sorted(starts), diags
+    assert c.shutdown() == 0
+
+
 def make_project(bearls: str | None) -> Path:
     """a copy of the fixtures plus lone.br (which nothing imports) and, optionally, a .bearls"""
-    root = Path(tempfile.mkdtemp(prefix="bearls-project-"))
+    # resolved since the server logs canonical paths (macOS's /var is a symlink to /private/var)
+    root = Path(tempfile.mkdtemp(prefix="bearls-project-")).resolve()
     atexit.register(shutil.rmtree, root, ignore_errors=True)
     for fixture in (MAIN, UTIL):
         shutil.copy(fixture, root / fixture.name)
@@ -573,7 +712,8 @@ def project_file_shares_one_analysis(server):
 def make_repo(bearls: str) -> tuple[Path, Path]:
     """(repo, project) laid out like bear-lang's tests/projects/04: bearc runs from the repository
     root and finds its input file through -I, so nothing in .bearls is relative to .bearls itself"""
-    repo = Path(tempfile.mkdtemp(prefix="bearls-repo-"))
+    # resolved since the server logs canonical paths (macOS's /var is a symlink to /private/var)
+    repo = Path(tempfile.mkdtemp(prefix="bearls-repo-")).resolve()
     atexit.register(shutil.rmtree, repo, ignore_errors=True)
     project = repo / "tests" / "projects" / "04"
     project.mkdir(parents=True)

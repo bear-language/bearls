@@ -102,9 +102,22 @@ class Analysis {
     /// where a span is, nullopt if it has no real source location
     [[nodiscard]] std::optional<Location> location_of(hir::Span span, PositionEncoding enc);
 
-    /// adds the other diagnostics chained to did (e.g. "previous definition here" notes) to out's
-    /// related information, and the edits they suggest to out's fixes
-    void add_chain(hir::DiagnosticId did, PositionEncoding enc, Diagnostic& out);
+    /// the first diagnostic in did's chain
+    [[nodiscard]] hir::DiagnosticId chain_head(hir::DiagnosticId did) const;
+
+    /// the member of head's chain its primary diagnostic is reported at: the outermost "in generic
+    /// instantiated here" / "called here" note if there is one (that's where the user's own code
+    /// is), else head itself
+    [[nodiscard]] hir::DiagnosticId chain_anchor(hir::DiagnosticId head) const;
+
+    /// a note/help that follows another diagnostic in its chain (e.g. "previous definition here"),
+    /// which is only reported as part of another diagnostic
+    [[nodiscard]] bool is_secondary_in_chain(hir::DiagnosticId did) const;
+
+    /// adds the members of head's chain (except reported_at, where out itself is) to out's related
+    /// information, and the edits they suggest to out's fixes
+    void add_chain(hir::DiagnosticId head, hir::DiagnosticId reported_at, PositionEncoding enc,
+                   Diagnostic& out);
 
     /// the text a "remove" / "replace with" diagnostic would put in place of its span, nullopt for
     /// any other diagnostic
@@ -124,8 +137,11 @@ class Analysis {
     [[nodiscard]] Diagnostic diagnostic_for_parser_error(hir::FileId fid, PositionEncoding enc,
                                                          const compiler_error_t& err);
 
-    [[nodiscard]] std::optional<Diagnostic>
-    maybe_diagnostic_for_hir_error(hir::FileId fid, PositionEncoding enc, hir::DiagnosticId did);
+    /// appends what a hir diagnostic is reported as (nothing, if it's only part of its chain's
+    /// primary diagnostic) to out
+    /// - a chain anchored at an instantiation / call is reported both there and at its head
+    void append_diagnostics_for_hir_error(PositionEncoding enc, hir::DiagnosticId did,
+                                          std::vector<Diagnostic>& out);
 
     /// bearc_args keeps pointers into these, so they must be initialized before (and outlive) db
     std::vector<std::string> arg_storage;
