@@ -502,14 +502,18 @@ def code_action_fix_comes_before_go_to(server):
 
 
 @test
-def no_code_action_for_non_symbol_replacement(server):
-    # "replace with `i32`" names a type rather than holding source text, so it has no edit
+def code_action_for_type_replacement(server):
+    # "replace with `i32`" names a type, which is printed back as source for the edit
     c = Client(server, ["utf-8"])
-    uri = open_doc(c, MAIN, MAIN.read_text() + "\nstruct S {\n    var x = 1;\n}\n")
+    text = MAIN.read_text() + "\nstruct S {\n    var x = 1;\n}\n"
+    uri = open_doc(c, MAIN, text)
     [diag] = c.diagnostics_for(uri)
     assert "replace with" in diag["relatedInformation"][0]["message"], diag
     start = diag["range"]["start"]
-    assert c.code_actions(uri, start["line"], start["character"]) == []
+    [fix] = c.code_actions(uri, start["line"], start["character"])
+    assert fix["title"] == "replace with `i32`", fix
+    fixed = apply_edit(text, uri, fix["edit"])
+    assert fixed.endswith("struct S {\n    i32 x = 1;\n}\n"), fixed
     assert c.shutdown() == 0
 
 
