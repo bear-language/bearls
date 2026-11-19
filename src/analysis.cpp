@@ -383,22 +383,14 @@ void Analysis::append_diagnostics_for_hir_error(PositionEncoding enc, hir::Diagn
     if (!loc) {
         return;
     }
-    std::optional<std::string> new_text = fix_text(did);
-    std::string message = message_for(did);
     Diagnostic help{
         .range = loc->range,
         .severity = DiagnosticSeverity::hint,
-        .message = message,
+        .message = message_for(did),
         .related_information = {},
         .fixes = {},
     };
-    if (new_text) {
-        help.fixes.push_back(DiagnosticFix{
-            .title = std::move(message),
-            .location = *loc,
-            .new_text = *std::move(new_text),
-        });
-    }
+    add_fixes(did, *loc, help.message, help.fixes);
     if (std::optional<Location> parent_loc
         = location_of(db.diagnostic(reported_parent).span, enc)) {
         help.related_information.push_back(DiagnosticRelatedInformation{
@@ -429,16 +421,8 @@ void Analysis::add_chain(hir::DiagnosticId head, hir::DiagnosticId reported_at,
         if (!loc) {
             continue;
         }
-        // fix text first, building the message goes back through the Context
-        std::optional<std::string> new_text = fix_text(member);
         std::string message = message_for(member);
-        if (new_text) {
-            out.fixes.push_back(DiagnosticFix{
-                .title = message,
-                .location = *loc,
-                .new_text = *std::move(new_text),
-            });
-        }
+        add_fixes(member, *loc, message, out.fixes);
         out.related_information.push_back(DiagnosticRelatedInformation{
             .location = *std::move(loc),
             .message = std::move(message),
@@ -456,19 +440,52 @@ std::string Analysis::message_for(hir::DiagnosticId did) {
     return message;
 }
 
-std::optional<std::string> Analysis::fix_text(hir::DiagnosticId did) const {
+std::vector<std::string> Analysis::fix_texts(hir::DiagnosticId did) {
     const hir::Diagnostic& diag = db.diagnostic(did);
     if (diag.code == hir::diag_code::remove) {
-        return std::string{};
+        return {std::string{}};
     }
-    if (diag.code == hir::diag_code::replace_with) {
-        // only a symbol is literal source text, anything else (e.g. a type) has no fix
-        if (const auto* replacement
-            = std::get_if<hir::DiagnosticSymbolAfterMessage>(&diag.message_value)) {
-            return std::string{db.symbol(replacement->sid)};
+    if (diag.code != hir::diag_code::replace_with) {
+        return {};
+    }
+    // copied out, stringifying a type goes back through the Context
+    const hir::DiagnosticMessageValue value = diag.message_value;
+    if (const auto* d = std::get_if<hir::DiagnosticSymbolAfterMessage>(&value)) {
+        return {std::string{db.symbol(d->sid)}};
+    }
+    if (const auto* d = std::get_if<hir::DiagnosticIdentifierAfterMessage>(&value)) {
+        std::string text;
+        for (hir::HirSize i = 0; i < d->sid_slice.len(); ++i) {
+            if (i != 0) {
+                text += "..";
+            }
+            text += db.symbol(d->sid_slice.get(i));
         }
+        return {std::move(text)};
     }
-    return std::nullopt;
+    if (const auto* d = std::get_if<hir::DiagnosticTypeAfterMessage>(&value)) {
+        std::vector<std::string> texts{db.type_to_string_as_mentioned(d->tid)};
+        if (std::string canonical = db.type_to_string_canonical(d->tid); canonical != texts[0]) {
+            texts.push_back(std::move(canonical));
+        }
+        return texts;
+    }
+    if (const auto* d = std::get_if<hir::DiagnosticCanonicalTypeAfterMessage>(&value)) {
+        return {db.type_to_string_canonical(d->tid)};
+    }
+    return {};
+}
+
+void Analysis::add_fixes(hir::DiagnosticId did, const Location& loc, const std::string& message,
+                         std::vector<DiagnosticFix>& out) {
+    std::vector<std::string> texts = fix_texts(did);
+    for (std::string& text : texts) {
+        out.push_back(DiagnosticFix{
+            .title = texts.size() == 1 ? message : "replace with `" + text + '`',
+            .location = loc,
+            .new_text = std::move(text),
+        });
+    }
 }
 
 std::optional<Analysis::Resolved> Analysis::resolve(hir::FileId fid, Position pos,

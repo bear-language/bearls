@@ -119,9 +119,12 @@ class Analysis {
     void add_chain(hir::DiagnosticId head, hir::DiagnosticId reported_at, PositionEncoding enc,
                    Diagnostic& out);
 
-    /// the text a "remove" / "replace with" diagnostic would put in place of its span, nullopt for
-    /// any other diagnostic
-    [[nodiscard]] std::optional<std::string> fix_text(hir::DiagnosticId did) const;
+    /// the texts a "remove" / "replace with" diagnostic offers to put in place of its span (a type
+    /// can be offered both as mentioned and canonically), empty for any other diagnostic
+    [[nodiscard]] std::vector<std::string> fix_texts(hir::DiagnosticId did);
+    /// adds one fix per text did offers at loc, titled with did's message when there's only one
+    void add_fixes(hir::DiagnosticId did, const Location& loc, const std::string& message,
+                   std::vector<DiagnosticFix>& out);
     /// primary message, with the subcode's text (if any) appended in parentheses
     [[nodiscard]] std::string message_for(hir::DiagnosticId did);
 
