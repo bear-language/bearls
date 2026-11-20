@@ -160,6 +160,8 @@ std::vector<std::string> single_file_args(std::string_view root_path,
         args.insert(args.end(), options.import_paths.begin(), options.import_paths.end());
     }
     args.insert(args.end(), options.extra_args.begin(), options.extra_args.end());
+    args.emplace_back("--lib"); // cuz for ls purposes warnings about `main` in random files are
+                                // gonna get annoying
     return args;
 }
 
@@ -346,8 +348,8 @@ void Analysis::append_diagnostics_for_hir_error(PositionEncoding enc, hir::Diagn
 
     const hir::Diagnostic& diag = db.diagnostic(did);
     // anything but a note/help that follows another diagnostic in its chain is reported on its own
-    // - this includes a head whose chain is anchored elsewhere, so an error inside a generic / compt
-    // function's body shows up both there and where it was instantiated / called
+    // - this includes a head whose chain is anchored elsewhere, so an error inside a generic /
+    // compt function's body shows up both there and where it was instantiated / called
     if (!is_secondary_in_chain(did)) {
         const hir::Span span = diag.span;
         Diagnostic primary{
@@ -555,9 +557,9 @@ std::optional<Hover> Analysis::hover(std::string_view path, Position pos, Positi
     const ContextDatabase::DefIdQueryResult& ids = resolved->ids;
     std::vector<hir::DefId> shown;
     std::string contents;
-    for (const auto& [def, maybe_did] : {std::pair{&result.variable, ids.variable_id},
-                                         std::pair{&result.type, ids.type_id},
-                                         std::pair{&result.mod, ids.mod_id}}) {
+    for (const auto& [def, maybe_did] :
+         {std::pair{&result.variable, ids.variable_id}, std::pair{&result.type, ids.type_id},
+          std::pair{&result.mod, ids.mod_id}}) {
         if (!def->has_value() || maybe_did.empty()
             || std::ranges::contains(shown, maybe_did.as_id())) {
             continue;
