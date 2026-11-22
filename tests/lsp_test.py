@@ -566,7 +566,7 @@ def generic_error_is_reported_where_it_was_instantiated(server):
     text = MAIN.read_text() + GENERIC_ERROR
     uri = open_doc(c, MAIN, text)
     diags = c.diagnostics_for(uri)
-    undefineds = [d for d in diags if d["message"].startswith("use of undefined type")]
+    undefineds = [d for d in diags if d["message"].startswith("use of undeclared type")]
     assert len(undefineds) == 2, diags
     # at the outermost instantiation, which is in the user's own code
     [undefined] = [d for d in undefineds if start_of(d) == position_of(text, "i32>{}")]

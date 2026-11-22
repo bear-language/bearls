@@ -447,7 +447,8 @@ std::vector<std::string> Analysis::fix_texts(hir::DiagnosticId did) {
     if (diag.code == hir::diag_code::remove) {
         return {std::string{}};
     }
-    if (diag.code != hir::diag_code::replace_with) {
+    if (diag.code != hir::diag_code::replace_with
+        && diag.code != hir::diag_code::did_you_mean_colon) {
         return {};
     }
     // copied out, stringifying a type goes back through the Context
