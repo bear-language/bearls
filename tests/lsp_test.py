@@ -619,7 +619,7 @@ def help_elsewhere_is_also_reported_on_its_own(server):
         assert help["message"] == "replace with `i32`", help
         [parent] = help["relatedInformation"]
         assert parent["location"]["range"] == error["range"], (help, error)
-        assert parent["message"] == error["message"], (help, error)
+        assert error["message"] == parent["message"] + " [fix available]", (help, error)
 
     # and is still related information on that error
     assert any(

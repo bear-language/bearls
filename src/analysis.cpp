@@ -66,6 +66,18 @@ DiagnosticSeverity severity_of(error_diag_type_e type) noexcept {
     return DiagnosticSeverity::error;
 }
 
+/// appends that a fix is available to the message of an error or warning that has one
+void mark_if_fixable(Diagnostic& diag) {
+    // not hints, those are the fixes themselves
+    const bool is_problem = diag.severity == DiagnosticSeverity::error
+                            || diag.severity == DiagnosticSeverity::warning;
+    if (!is_problem || diag.fixes.empty()) {
+        return;
+    }
+    // brackets after parentheses (e.g. a subcode's), so the two don't run together
+    diag.message += diag.message.ends_with(')') ? " [fix available]" : " (fix available)";
+}
+
 /// byte offset of a pointer into src (e.g. a token's start), clamped to src
 size_t offset_in(std::string_view src, const char* p) noexcept {
     const auto base = reinterpret_cast<uintptr_t>(src.data());
@@ -264,6 +276,7 @@ std::vector<Diagnostic> Analysis::diagnostics(std::string_view path, PositionEnc
     for (const hir::DiagnosticId did : hir_diagnostic_ids) {
         append_diagnostics_for_hir_error(enc, did, out);
     }
+    std::ranges::for_each(out, mark_if_fixable);
 
     // in source order, where a parser diagnostic sharing a span with a hir diagnostic stays ahead
     // of it (the sort is stable and parser diagnostics were added first) so it's shown on top
