@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -26,7 +27,8 @@ enum class TransportError : uint8_t {
 [[nodiscard]] std::string_view to_string(TransportError err) noexcept;
 
 /// JSON-RPC base protocol framing (`Content-Length: N\r\n\r\n<body>`) over raw file descriptors
-/// - reads use poll(2) so the server can wait for input with a timeout (used for debouncing)
+/// - reads use poll(2) so the server can wait for input with a timeout (used for debouncing); on
+///   windows, where pipes can't be polled, a reader thread feeds a condition variable instead
 /// - this is deliberately not built on iostreams, whose buffering can't be combined with poll(2)
 class Transport {
   public:
@@ -52,6 +54,11 @@ class Transport {
 
     int in_fd;
     int out_fd;
+#ifdef _WIN32
+    /// windows can't poll pipes, so a background thread does the blocking reads
+    struct InputPump;
+    std::shared_ptr<InputPump> pump;
+#endif
     std::string in_buffer;
     /// start of the unconsumed part of in_buffer
     size_t in_pos = 0;

@@ -7,11 +7,13 @@ usage: tests/lsp_test.py [path/to/bearls]   (defaults to build/bearls)
 import atexit
 import json
 import os
+import queue
 import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -85,12 +87,33 @@ class Client:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
-            ready, _, _ = select.select([self.proc.stdout], [], [], remaining)
-            if ready:
-                chunk = os.read(self.proc.stdout.fileno(), 65536)
+            chunk = self.read_chunk(remaining)
+            if chunk is not None:
                 if not chunk:
                     raise AssertionError("server closed stdout")
                 self.buffer += chunk
+
+    def read_chunk(self, timeout: float) -> bytes | None:
+        """whatever the server has written (b"" at end of stream), None if timeout elapsed first"""
+        if sys.platform != "win32":
+            ready, _, _ = select.select([self.proc.stdout], [], [], timeout)
+            return os.read(self.proc.stdout.fileno(), 65536) if ready else None
+        # windows can't select() on pipes, so a daemon thread does the blocking reads
+        if not hasattr(self, "chunks"):
+            self.chunks: queue.Queue[bytes] = queue.Queue()
+
+            def pump(fd: int, chunks: queue.Queue[bytes]) -> None:
+                while chunk := os.read(fd, 65536):
+                    chunks.put(chunk)
+                chunks.put(b"")
+
+            threading.Thread(
+                target=pump, args=(self.proc.stdout.fileno(), self.chunks), daemon=True
+            ).start()
+        try:
+            return self.chunks.get(timeout=timeout)
+        except queue.Empty:
+            return None
 
     def wait_for(self, predicate, timeout: float = 5.0) -> dict:
         for i, msg in enumerate(self.pending):
@@ -668,9 +691,14 @@ def make_project(bearls: str | None) -> Path:
     return root
 
 
+def logged(path: Path) -> str:
+    """path as the server logs it, natively (msys2's python spells windows paths with /)"""
+    return str(path).replace("/", "\\") if sys.platform == "win32" else str(path)
+
+
 def own_analyses(c: Client, path: Path) -> int:
     """how many times path was analyzed on its own rather than as part of a project"""
-    return c.log().count(f"analyzed {path} (")
+    return c.log().count(f"analyzed {logged(path)} (")
 
 
 @test
@@ -731,7 +759,7 @@ def make_repo(bearls: str) -> tuple[Path, Path]:
 def assert_repo_project_works(c: Client, repo: Path, project: Path) -> None:
     uri = open_doc(c, project / "main.br")
     assert c.diagnostics_for(uri) == []
-    assert f"(from {repo})" in c.log(), c.log()
+    assert f"(from {logged(repo)})" in c.log(), c.log()
     line, col = position_of((project / "main.br").read_text(), "square(3)")
     loc = single_location(c.definition(uri, line, col + 1))
     assert loc["uri"] == (repo / "lib" / "util.br").as_uri(), loc

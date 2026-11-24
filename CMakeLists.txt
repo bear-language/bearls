@@ -48,6 +48,10 @@ target_include_directories(bearls SYSTEM PRIVATE third_party)
 # ContextDatabase's public header reaches into bearc's private src/ tree and into LLVM
 target_include_directories(bearls SYSTEM PRIVATE "${BEARC_DIR}/src" ${LLVM_INCLUDE_DIRS})
 target_link_libraries(bearls PRIVATE libbearc ${BEARLS_LLVM_LIBS})
+# on windows, libstdc++ keeps std::print's console support in its experimental library
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_libraries(bearls PRIVATE stdc++exp)
+endif()
 target_compile_definitions(bearls PRIVATE BEARLS_VERSION="${PROJECT_VERSION}")
 target_compile_options(bearls PRIVATE
     -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wnon-virtual-dtor

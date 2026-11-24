@@ -15,6 +15,11 @@
 #include <string_view>
 #include <unistd.h>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 #ifndef BEARC_VERSION
 #define BEARC_VERSION "unknown"
 #endif
@@ -60,8 +65,14 @@ int main(int argc, char** argv) {
         std::perror("bearls: failed to set up stdout");
         return 1;
     }
+#ifdef _WIN32
+    // text mode would turn the protocol's \r\n into \r\r\n on write and \n on read
+    ::_setmode(STDIN_FILENO, _O_BINARY);
+    ::_setmode(protocol_fd, _O_BINARY);
+#else
     // a vanished client should surface as a failed write, not kill the process
     std::signal(SIGPIPE, SIG_IGN);
+#endif
 
     lsp::Transport transport{STDIN_FILENO, protocol_fd};
     lsp::Server server{transport};

@@ -64,6 +64,14 @@ constexpr bool is_uri_path_safe(unsigned char c) noexcept {
            || c == '.' || c == '_' || c == '~' || c == '/';
 }
 
+#ifdef _WIN32
+/// whether path starts with a drive letter, as in C: or C:/x
+constexpr bool is_drive_path(std::string_view path) noexcept {
+    return path.size() >= 2 && ((path[0] | 0x20) >= 'a' && (path[0] | 0x20) <= 'z')
+           && path[1] == ':' && (path.size() == 2 || path[2] == '/' || path[2] == '\\');
+}
+#endif
+
 } // namespace
 
 LineIndex::LineIndex(std::string_view text) : text{text} {
@@ -146,15 +154,21 @@ std::optional<std::string> uri_to_path(std::string_view uri) {
         return std::nullopt;
     }
     const std::string_view host = uri.substr(0, path_start);
+    std::string path;
     if (!host.empty() && host != "localhost") {
+#ifdef _WIN32
+        // file://server/share/x is the UNC path \\server\share\x
+        path = "//";
+        path += host;
+#else
         return std::nullopt;
+#endif
     }
     std::string_view encoded = uri.substr(path_start);
     // drop any query or fragment
     encoded = encoded.substr(0, encoded.find_first_of("?#"));
 
-    std::string path;
-    path.reserve(encoded.size());
+    path.reserve(path.size() + encoded.size());
     for (size_t i = 0; i < encoded.size(); ++i) {
         if (encoded[i] == '%' && i + 2 < encoded.size() && hex_value(encoded[i + 1]) >= 0
             && hex_value(encoded[i + 2]) >= 0) {
@@ -164,13 +178,33 @@ std::optional<std::string> uri_to_path(std::string_view uri) {
             path += encoded[i];
         }
     }
+#ifdef _WIN32
+    // file:///C:/x (or file:///c%3A/x) is C:\x, not \C:\x
+    if (is_drive_path(std::string_view{path}.substr(std::min<size_t>(1, path.size())))) {
+        path.erase(0, 1);
+    }
+    std::ranges::replace(path, '/', '\\');
+#endif
     return path;
 }
 
 std::string path_to_uri(std::string_view path) {
     static constexpr std::string_view HEX = "0123456789ABCDEF";
     std::string uri = "file://";
-    uri.reserve(uri.size() + path.size());
+    uri.reserve(uri.size() + path.size() + 1);
+#ifdef _WIN32
+    std::string slashed{path};
+    std::ranges::replace(slashed, '\\', '/');
+    path = slashed;
+    if (path.starts_with("//")) {
+        path.remove_prefix(2); // a UNC path's server becomes the URI's host
+    } else if (is_drive_path(path)) {
+        // C:/x is file:///C:/x, its colon left unescaped as most clients write it
+        uri += '/';
+        uri += path.substr(0, 2);
+        path.remove_prefix(2);
+    }
+#endif
     for (const char ch : path) {
         const auto c = static_cast<unsigned char>(ch);
         if (is_uri_path_safe(c)) {

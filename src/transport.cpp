@@ -10,9 +10,19 @@
 #include <array>
 #include <cerrno>
 #include <charconv>
+#include <utility>
+
+#ifdef _WIN32
+#include <chrono>
+#include <condition_variable>
+#include <io.h>
+#include <limits>
+#include <mutex>
+#include <thread>
+#else
 #include <poll.h>
 #include <unistd.h>
-#include <utility>
+#endif
 
 namespace lsp {
 
@@ -125,6 +135,86 @@ std::expected<std::optional<std::string>, TransportError> Transport::take_buffer
     return body;
 }
 
+#ifdef _WIN32
+
+struct Transport::InputPump {
+    std::mutex mutex;
+    std::condition_variable ready;
+    /// bytes read by the pump thread but not yet moved into in_buffer
+    std::string data;
+    bool eof = false;
+    bool error = false;
+};
+
+std::expected<bool, TransportError> Transport::fill(int timeout_ms) {
+    if (!pump) {
+        // the thread is detached and co-owns the state: it may be blocked in _read when the server
+        // shuts down, and process exit tears it down
+        pump = std::make_shared<InputPump>();
+        std::thread{[state = pump, fd = in_fd] {
+            std::string chunk(READ_CHUNK_BYTES, '\0');
+            while (true) {
+                const int got = ::_read(fd, chunk.data(), static_cast<unsigned>(chunk.size()));
+                const std::scoped_lock lock{state->mutex};
+                if (got > 0) {
+                    state->data.append(chunk.data(), static_cast<size_t>(got));
+                } else if (got == 0) {
+                    state->eof = true;
+                } else {
+                    state->error = true;
+                }
+                state->ready.notify_one();
+                if (got <= 0) {
+                    return;
+                }
+            }
+        }}.detach();
+    }
+
+    std::unique_lock lock{pump->mutex};
+    const auto has_news = [&] { return !pump->data.empty() || pump->eof || pump->error; };
+    if (timeout_ms < 0) {
+        pump->ready.wait(lock, has_news);
+    } else if (!pump->ready.wait_for(lock, std::chrono::milliseconds{timeout_ms}, has_news)) {
+        return false;
+    }
+    // hand over buffered data before reporting the end of the stream, matching read(2)
+    if (!pump->data.empty()) {
+        in_buffer += pump->data;
+        pump->data.clear();
+        return true;
+    }
+    return std::unexpected{pump->eof ? TransportError::end_of_stream : TransportError::io_error};
+}
+
+bool Transport::write_message(std::string_view body) {
+    out_buffer.clear();
+    out_buffer += "Content-Length: ";
+    std::array<char, 24> len_buf{};
+    const auto [len_end, ec]
+        = std::to_chars(len_buf.data(), len_buf.data() + len_buf.size(), body.size());
+    out_buffer.append(len_buf.data(), len_end);
+    out_buffer += HEADER_TERMINATOR;
+    out_buffer += body;
+
+    std::string_view remaining = out_buffer;
+    while (!remaining.empty()) {
+        const auto count = static_cast<unsigned>(
+            std::min<size_t>(remaining.size(), std::numeric_limits<int>::max()));
+        const int written = ::_write(out_fd, remaining.data(), count);
+        if (written < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        remaining.remove_prefix(static_cast<size_t>(written));
+    }
+    return true;
+}
+
+#else
+
 std::expected<bool, TransportError> Transport::fill(int timeout_ms) {
     pollfd pfd{.fd = in_fd, .events = POLLIN, .revents = 0};
     while (true) {
@@ -180,5 +270,7 @@ bool Transport::write_message(std::string_view body) {
     }
     return true;
 }
+
+#endif
 
 } // namespace lsp
